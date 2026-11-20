@@ -228,6 +228,75 @@ class DebtBasedScoring:
             )
 
     @staticmethod
+    def first_full_week_start_ms(first_timestamp_ms: int) -> int:
+        """Start of the first week fully covered by data beginning at first_timestamp_ms."""
+        week_start_ms = TimeUtil.ms_at_start_of_week(first_timestamp_ms)
+        return week_start_ms + MS_IN_WEEK if first_timestamp_ms > week_start_ms else week_start_ms
+
+    @staticmethod
+    def entity_checkpoint_target(entity_checkpoints: list, emissions_checkpoints: list,
+                                 prev_target_end_ms: int) -> dict:
+        """An entity's weekly target from its aggregated debt ledger: the week's rise in the cumulative
+        high-water-marked payout over the checkpoints, plus what emissions have not yet paid of the
+        weeks before it. Returns {'target', 'owed_current_week', 'overflow'}."""
+        through_this_week = [cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms]
+        through_prior_week = [cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms - MS_IN_WEEK]
+        current_week = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(through_this_week)
+                           - DebtBasedScoring.calculate_payout_from_checkpoints(through_prior_week))
+        overflow = 0.0
+        if entity_checkpoints and emissions_checkpoints:
+            start_ms = max(DebtBasedScoring.first_full_week_start_ms(entity_checkpoints[0].timestamp_ms),
+                           DebtBasedScoring.first_full_week_start_ms(emissions_checkpoints[0].chunk_start_ms))
+            owed_checkpoints = [cp for cp in entity_checkpoints
+                                if start_ms <= cp.timestamp_ms <= prev_target_end_ms - MS_IN_WEEK]
+            owed = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(owed_checkpoints))
+            paid = sum(cp.chunk_emissions_usd for cp in emissions_checkpoints if start_ms + MS_IN_WEEK <= cp.chunk_start_ms)
+            overflow = max(0.0, owed - paid)
+        return {'target': current_week + overflow, 'owed_current_week': current_week, 'overflow': overflow}
+
+    @staticmethod
+    def payout_table_target(table: dict, emissions_checkpoints: list, prev_target_end_ms: int) -> dict:
+        """A payee's weekly target from the payout table (EntityManager.payout_rows_for_payee): what
+        the last closed week owes, plus what emissions have not yet paid of the weeks before it.
+
+            owed[w]  = sum of the week's effective payouts, times the entity collateral factor frozen for it
+            target   = owed[W] + overflow, W the last closed week
+            overflow = max(0, sum of owed[w] for start <= w < W - emissions received from start + 1 week)
+
+        start is the later of the payee's first earning segment week and its first full emissions week.
+        Nothing stores what was paid: emissions pay the oldest weeks first, so a correction to a closed
+        week changes owed[w] and reaches the overflow on the next cycle. Returns the target, the overflow,
+        and per week owed / paid / unpaid."""
+        last_week_ms = prev_target_end_ms - MS_IN_WEEK
+        factors = {int(week): float(factor) for week, factor in (table.get('collateral_factor_by_week') or {}).items()}
+        owed: dict = defaultdict(float)
+        for row in table.get('rows') or []:
+            week_ms = TimeUtil.ms_at_start_of_week(row['start_ms'])
+            if week_ms <= last_week_ms:
+                owed[week_ms] += row['payout'] * factors.get(week_ms, 1.0)
+        first_earning_ms = table.get('first_earning_week_ms')
+        start_ms = None
+        if emissions_checkpoints and first_earning_ms is not None:
+            start_ms = max(first_earning_ms,
+                           DebtBasedScoring.first_full_week_start_ms(emissions_checkpoints[0].chunk_start_ms))
+        pool = (sum(cp.chunk_emissions_usd for cp in emissions_checkpoints
+                    if start_ms + MS_IN_WEEK <= cp.chunk_start_ms) if start_ms is not None else 0.0)
+        weeks, unpaid_before = [], 0.0
+        for week_ms in sorted(owed):
+            in_window = start_ms is not None and start_ms <= week_ms < last_week_ms
+            paid = min(owed[week_ms], pool) if in_window else 0.0
+            pool -= paid
+            if in_window:
+                unpaid_before += owed[week_ms] - paid
+            weeks.append({'week_start_ms': week_ms, 'owed': owed[week_ms], 'paid': paid,
+                          'unpaid': owed[week_ms] - paid if in_window or week_ms == last_week_ms else 0.0,
+                          'collateral_factor': factors.get(week_ms, 1.0)})
+        current_week = owed.get(last_week_ms, 0.0)
+        overflow = max(0.0, unpaid_before)
+        return {'target': current_week + overflow, 'owed_current_week': current_week, 'overflow': overflow,
+                'start_ms': start_ms, 'last_closed_week_ms': last_week_ms, 'weeks': weeks}
+
+    @staticmethod
     def calculate_payout_from_checkpoints(
         checkpoints: List[DebtCheckpoint]
     ) -> float:

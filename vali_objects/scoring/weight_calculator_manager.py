@@ -121,6 +121,13 @@ class WeightCalculatorManager(CacheController):
             connection_mode=connection_mode
         )
 
+        from entity_management.entity_client import EntityClient
+        self._entity_client = EntityClient(
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
         from shared_objects.subtensor_ops.subtensor_ops_client import SubtensorOpsClient
         self._subtensor_ops_client = SubtensorOpsClient(
             running_unit_tests=running_unit_tests,
@@ -442,57 +449,30 @@ class WeightCalculatorManager(CacheController):
         entity_miner_required_payouts = {}
         for hotkey in entity_hotkeys:
             entity_checkpoints = all_debt_ledgers[hotkey].checkpoints if hotkey in all_debt_ledgers else []
-            checkpoints_through_this_week = [
-                cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms
-            ]
-            checkpoints_through_prior_week = [
-                cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms - MS_IN_WEEK
-            ]
-            cumulative_through_this_week = DebtBasedScoring.calculate_payout_from_checkpoints(
-                checkpoints_through_this_week
-            )
-            cumulative_through_prior_week = DebtBasedScoring.calculate_payout_from_checkpoints(
-                checkpoints_through_prior_week
-            )
-            current_week_required = max(
-                0.0, cumulative_through_this_week - cumulative_through_prior_week
-            )
-
-            # Same underpayment-carry logic as regular hotkeys, applied to entities' checkpoint series.
             entity_emissions_checkpoints = all_emissions_ledgers[hotkey].checkpoints if hotkey in all_emissions_ledgers else []
-            if entity_checkpoints and entity_emissions_checkpoints:
-                first_full_payout_week_ms = self._first_full_week_start_ms(entity_checkpoints[0].timestamp_ms)
-                first_full_emissions_week_ms = self._first_full_week_start_ms(entity_emissions_checkpoints[0].chunk_start_ms)
-                overflow_start_ms = max(first_full_payout_week_ms, first_full_emissions_week_ms)
-
-                payouts_owed_checkpoints = [
-                    cp for cp in entity_checkpoints
-                    if overflow_start_ms <= cp.timestamp_ms <= prev_target_end_ms - MS_IN_WEEK
-                ]
-                payouts_owed = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(payouts_owed_checkpoints))
-                emissions_paid = sum(
-                    cp.chunk_emissions_usd for cp in entity_emissions_checkpoints
-                    if overflow_start_ms + MS_IN_WEEK <= cp.chunk_start_ms
-                )
-                overflow = max(0.0, payouts_owed - emissions_paid)
-            else:
-                overflow = 0.0
-            entity_miner_required_payouts[hotkey] = current_week_required + overflow
-            # Small hotkey count (few entities); log unconditionally, not gated on `verbose`,
-            # so this is visible on every run while diagnosing the this-week-vs-prior-week diff.
+            old = DebtBasedScoring.entity_checkpoint_target(entity_checkpoints, entity_emissions_checkpoints,
+                                                            prev_target_end_ms)
+            entity_miner_required_payouts[hotkey] = old['target']
             latest_ts = entity_checkpoints[-1].timestamp_ms if entity_checkpoints else None
             latest_str = TimeUtil.millis_to_short_date_str(latest_ts) if latest_ts else "n/a"
             logger.info(
                 f"[PAYOUT_ENTITY_DEBUG] [{hotkey}] total_checkpoints={len(entity_checkpoints)}, "
-                f"latest_checkpoint={latest_str}, "
-                f"checkpoints_through_this_week={len(checkpoints_through_this_week)} "
-                f"(cumulative=${cumulative_through_this_week:.2f}), "
-                f"checkpoints_through_prior_week={len(checkpoints_through_prior_week)} "
-                f"(cumulative=${cumulative_through_prior_week:.2f}), "
+                f"latest_checkpoint={latest_str}, current_week=${old['owed_current_week']:.2f}, "
                 f"all_time_emissions=${all_time_emissions.get(hotkey, 0.0):.2f}, "
-                f"overflow=${overflow:.2f}, "
-                f"weekly_target=${entity_miner_required_payouts[hotkey]:.2f}"
+                f"overflow=${old['overflow']:.2f}, weekly_target=${old['target']:.2f}"
             )
+            # Dry run of the payout table the weights move to (M8): logged beside the target in force
+            try:
+                table = self._entity_client.payout_rows_for_payee(hotkey, prev_target_end_ms)
+                new = DebtBasedScoring.payout_table_target(table, entity_emissions_checkpoints, prev_target_end_ms)
+                logger.info(
+                    f"[PAYOUT_TABLE_DRY_RUN] [{hotkey}] current_week old=${old['owed_current_week']:.2f} "
+                    f"new=${new['owed_current_week']:.2f}, overflow old=${old['overflow']:.2f} "
+                    f"new=${new['overflow']:.2f}, target old=${old['target']:.2f} new=${new['target']:.2f}"
+                    + (f", unsettled={table['missing']}" if table.get('missing') else "")
+                )
+            except Exception as e:
+                logger.warning(f"[PAYOUT_TABLE_DRY_RUN] [{hotkey}] payout table unavailable: {e}")
 
         # Combine miner and entity weekly targets into a unified dict
         all_required_payouts = {**miner_required_payouts, **entity_miner_required_payouts}

@@ -385,6 +385,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/payout-override/<hotkey>", methods=["GET"])(self.get_payout_overrides)
         self.app.route("/admin/payout-override/<hotkey>", methods=["POST"])(self.set_payout_override)
         self.app.route("/admin/soft-breach/<hotkey>", methods=["GET"])(self.get_soft_breach_weeks)
+        self.app.route("/admin/payout-balance/<payee>", methods=["GET"])(self.get_payout_balance)
         self.app.route("/admin/soft-breach/<hotkey>", methods=["POST"])(self.set_soft_breach_week)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
@@ -2272,6 +2273,67 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             logger.error(f"Error updating the payout record for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
+    def _override_weeks(self, hotkey: str) -> list:
+        """Every closed segment-week of hotkey with its computed, override and effective payout, and the
+        escrow it holds, released and had paid by instant payouts."""
+        if not getattr(self, '_entity_client', None):
+            return []
+        try:
+            table = self._entity_client.payout_rows_for_payee(hotkey, TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()))
+        except Exception as e:
+            logger.warning(f"Could not read the payout rows of {hotkey}: {e}")
+            return []
+        weeks = {}
+        for row in table.get('rows') or []:
+            key = (row.get('segment_start_ms'), TimeUtil.ms_at_start_of_week(row['start_ms']))
+            week = weeks.setdefault(key, {'segment_start_ms': key[0], 'week_start_ms': key[1], 'bucket': row.get('bucket'),
+                                          'computed': 0.0, 'override': None, 'effective': 0.0, 'deferred': 0.0,
+                                          'deferred_released': 0.0, 'instant_paid': 0.0})
+            for field in ('computed', 'effective', 'deferred', 'deferred_released', 'instant_paid'):
+                week[field] += row.get(field) or 0.0
+            if row.get('override') is not None:
+                week['override'] = row['override']
+        return sorted(weeks.values(), key=lambda w: (w['week_start_ms'], w['segment_start_ms'] or 0))
+
+    def get_payout_balance(self, payee: str):
+        """
+        What a payee is owed per closed payout week, what emissions paid of it (oldest week first) and
+        what is still unpaid, with the weekly target the weights work from (DebtBasedScoring.payout_table_target).
+        payee is an entity hotkey or a standard miner's hotkey. Requires tier 500 access.
+
+        Query params:
+          compare=true: also return the target from the entity's aggregated debt ledger (the method the
+                        weights used before the payout table), for the dry run of the switch
+
+        Example:
+        curl "http://localhost:48888/admin/payout-balance/<payee>?compare=true" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Payout balance endpoint requires tier 500 access'}), 403
+        if not self._entity_client or not self._debt_ledger_client:
+            return jsonify({'error': 'Payout data not available'}), 503
+
+        compare = request.args.get('compare', '').lower() == 'true'
+        try:
+            from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
+            through_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+            table = self._entity_client.payout_rows_for_payee(payee, through_ms)
+            emissions = self._debt_ledger_client.get_emissions_ledger(payee)
+            emissions_checkpoints = emissions.checkpoints if emissions else []
+            result = DebtBasedScoring.payout_table_target(table, emissions_checkpoints, through_ms)
+            body = {'status': 'success', 'payee': payee, **result, 'unsettled_hotkeys': table.get('missing', [])}
+            if compare:
+                ledger = self._debt_ledger_client.get_ledger(payee)
+                body['debt_ledger_method'] = DebtBasedScoring.entity_checkpoint_target(
+                    ledger.checkpoints if ledger else [], emissions_checkpoints, through_ms)
+            return self._jsonify_with_custom_encoder(body)
+        except Exception as e:
+            logger.error(f"Error reading the payout balance of {payee}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
     def get_payout_overrides(self, hotkey: str):
         """
         List the payout overrides of a miner's bucket segments. Requires tier 500 access.
@@ -2285,11 +2347,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         if not self.can_access_tier(api_key, 500):
             return jsonify({'error': 'Payout override endpoint requires tier 500 access'}), 403
         try:
-            return jsonify({
+            return self._jsonify_with_custom_encoder({
                 'status': 'success',
                 'hotkey': hotkey,
                 'payout_overrides': self._challenge_period_client.get_payout_overrides(hotkey),
-            }), 200
+                'weeks': self._override_weeks(hotkey),
+            })
         except Exception as e:
             logger.error(f"Error reading payout overrides for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
@@ -2339,8 +2402,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 hotkey, segment_start_ms, week_start_ms, payout_usd, clear, note)
             if not success:
                 return jsonify({'error': message}), 400
-            return jsonify({'status': 'success', 'hotkey': hotkey, 'segment_start_ms': segment_start_ms,
-                            'payout_overrides': overrides, 'message': message}), 200
+            body = {'status': 'success', 'hotkey': hotkey, 'segment_start_ms': segment_start_ms,
+                    'payout_overrides': overrides, 'message': message}
+            deferred = sum(week['deferred'] for week in self._override_weeks(hotkey)
+                           if (week['segment_start_ms'], week['week_start_ms']) == (segment_start_ms, week_start_ms))
+            if not clear and deferred > 0:
+                body['warning'] = (f"the week holds ${deferred:.2f} of deferred payout: the override does not release "
+                                   f"it, which the next clean week still does unless it is overridden too")
+            return self._jsonify_with_custom_encoder(body)
         except Exception as e:
             logger.error(f"Error setting a payout override for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500

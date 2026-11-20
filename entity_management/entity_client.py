@@ -482,10 +482,12 @@ class EntityClient(RPCClientBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: Optional[int]
+        end_time_ms: Optional[int],
+        instant_payouts: Optional[List[dict]] = None,
     ) -> Optional[dict]:
         """
-        Calculate payout for a subaccount based on debt ledger checkpoints.
+        Calculate payout for a subaccount, bucket segment by bucket segment. instant_payouts are the
+        on-demand payouts already made, [{cut_ms, payout_usd}].
 
         Args:
             subaccount_uuid: The subaccount UUID
@@ -498,8 +500,13 @@ class EntityClient(RPCClientBase):
         return self._server.calculate_subaccount_payout_rpc(
             subaccount_uuid,
             start_time_ms,
-            end_time_ms
+            end_time_ms,
+            instant_payouts,
         )
+
+    def payout_rows_for_payee(self, payee: str, through_ms: int) -> dict:
+        """The per-week payout table shared by the payout endpoint and the weights."""
+        return self._server.payout_rows_for_payee_rpc(payee, through_ms)
 
     # ==================== Validator Broadcast Methods ====================
 

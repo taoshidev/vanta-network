@@ -989,3 +989,23 @@ def test_rest_soft_breach_rejects_bad_params(soft_breach_rest, query):
     server, client = soft_breach_rest
     assert client.post(f"/admin/soft-breach/{HOTKEY}?{query}").status_code == 400
     server._challenge_period_client.admin_set_soft_breach_week.assert_not_called()
+
+
+def test_rest_payout_balance_reports_the_table_and_the_comparison():
+    server = _admin_server()
+    server._entity_client = MagicMock()
+    server._debt_ledger_client = MagicMock()
+    server._jsonify_with_custom_encoder = lambda body: Flask(__name__).response_class(
+        json.dumps(body), mimetype="application/json")
+    server._entity_client.payout_rows_for_payee.return_value = {
+        "rows": [{"start_ms": WEEK, "payout": 10.0}], "first_earning_week_ms": WEEK,
+        "collateral_factor_by_week": {}, "missing": []}
+    server._debt_ledger_client.get_emissions_ledger.return_value = None
+    server._debt_ledger_client.get_ledger.return_value = None
+    app = Flask(__name__)
+    app.route("/admin/payout-balance/<payee>", methods=["GET"])(server.get_payout_balance)
+    with patch.object(TimeUtil, "now_in_millis", return_value=WEEK + 7 * DAILY_MS + 1):
+        body = app.test_client().get("/admin/payout-balance/entity?compare=true").get_json()
+    assert (body["owed_current_week"], body["target"]) == (10.0, 10.0)
+    assert body["weeks"][0]["week_start_ms"] == WEEK
+    assert body["debt_ledger_method"] == {"target": 0.0, "owed_current_week": 0.0, "overflow": 0.0}

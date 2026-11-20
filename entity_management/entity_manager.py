@@ -113,6 +113,10 @@ class EntityData(BaseModel):
     next_subaccount_id: int = Field(default=0, description="Next subaccount ID to assign (monotonic)")
     registered_at_ms: int = Field(description="Timestamp when entity was registered")
     endpoint_url: Optional[str] = Field(default=None, description="Public-facing endpoint URL for this entity miner")
+    collateral_factor_by_week: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Payout week start (Monday 00:00 UTC ms, as str) -> min(1, collateral / required), frozen once "
+                    "the week closed. Scales the entity's weights only, never its subaccounts' payouts")
 
     class Config:
         arbitrary_types_allowed = True
@@ -1872,16 +1876,15 @@ class EntityManager(ValidatorBroadcastBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: Optional[int]
+        end_time_ms: Optional[int],
+        instant_payouts: Optional[List[dict]] = None,
     ) -> Optional[dict]:
         """
-        Calculate payout for a subaccount based on debt ledger checkpoints in time range.
+        Calculate a subaccount's payout, bucket segment by bucket segment.
 
-        Orchestrates:
-        1. UUID -> hotkey translation
-        2. Debt ledger retrieval
-        3. Checkpoint filtering by time range
-        4. Payout calculation via DebtBasedScoring.calculate_payout_from_checkpoints()
+        instant_payouts are the on-demand payouts already made, [{cut_ms, payout_usd}], as tracked by
+        the caller. Each one paid its segment's rows from the start of its week (or the previous cut)
+        up to cut_ms; those rows are reported in instant_paid rather than payout.
 
         Args:
             subaccount_uuid: The subaccount UUID
@@ -1893,11 +1896,13 @@ class EntityManager(ValidatorBroadcastBase):
                 'hotkey': str,
                 'total_checkpoints': int,
                 'checkpoints': List[dict],
-                'weekly_settlements': List[dict],  # each carries deferred / deferred_released /
-                                                   # deferred_forfeited / deferred_balance, and
-                                                   # settled_segment for one settled at an
-                                                   # account switch rather than computed here
-                'payout': float,
+                'weekly_settlements': List[dict],  # one row per segment-week (split at instant payouts),
+                                                   # each with computed / override / effective (= payout),
+                                                   # deferred / deferred_released / deferred_forfeited /
+                                                   # deferred_balance, instant_paid, and payout_record or
+                                                   # frozen_ms when it was pinned rather than computed here
+                'payout': float,              # still owed: excludes what instant payouts paid
+                'instant_paid_usd': float,    # paid by instant_payouts within the period
                 'deferred_balance': float,    # escrow still held at end_time_ms
                 'deferred_forfeited': float,  # cumulative escrow dropped by leaving the pro track
                 'off_track': bool,            # current bucket does not hold deferred payouts - true for
@@ -1908,17 +1913,250 @@ class EntityManager(ValidatorBroadcastBase):
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
             return None
-        return self._calculate_payout_for_hotkey(synthetic_hotkey, start_time_ms, end_time_ms)
+        return self._calculate_payout_for_hotkey(synthetic_hotkey, start_time_ms, end_time_ms, instant_payouts)
 
     def _calculate_payout_for_hotkey(
         self,
         synthetic_hotkey: str,
         start_time_ms: int,
         end_time_ms: Optional[int],
+        instant_payouts: Optional[List[dict]] = None,
+    ) -> Optional[dict]:
+        """Payout for one subaccount, keyed by synthetic hotkey. See calculate_subaccount_payout."""
+        realtime = end_time_ms is None
+        if realtime:
+            end_time_ms = TimeUtil.now_in_millis()
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        if not entity_hotkey or subaccount_id is None:
+            return None
+        entity_data = self.get_entity_data(entity_hotkey)
+        if not entity_data or not entity_data.subaccounts.get(subaccount_id):
+            return None
+
+        try:
+            # The debt ledger supplies the display fields (checkpoints/total_checkpoints)
+            debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
+            # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
+            off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
+            cuts = sorted((int(p['cut_ms']), float(p['payout_usd'])) for p in instant_payouts or [])
+            settled = self._payout_rows(synthetic_hotkey, end_time_ms, realtime, miner_bucket, debt_ledger, cuts)
+            if settled is None:
+                return None
+            rows, deferred_balance = settled
+            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
+            # Only sum settlements that fall within the requested period.
+            in_period = [w for w in rows if w['start_ms'] >= start_time_ms]
+            return {
+                'hotkey': synthetic_hotkey,
+                'total_checkpoints': len(checkpoints_dict),
+                'checkpoints': checkpoints_dict,
+                'weekly_settlements': rows,
+                'payout': sum(max(0.0, w['payout'] - w['instant_paid']) for w in in_period),
+                'instant_paid_usd': sum(w['instant_paid'] for w in in_period),
+                'deferred_balance': deferred_balance,
+                'deferred_forfeited': sum((w['deferred_forfeited'] for w in rows), 0.0),
+                'off_track': off_track,
+            }
+        except Exception as e:
+            logger.error(f"[ENTITY_MANAGER] Error calculating payout for {synthetic_hotkey}: {e}")
+            return None
+
+    def _payout_segments(self, hotkey: str, miner_bucket: Optional[MinerBucket]) -> List[dict]:
+        """The hotkey's bucket segments, oldest first. Without any bucket history (backtesting)
+        the whole account is one segment in the current bucket."""
+        segments = self._challenge_period_client.get_bucket_segments(hotkey) or []
+        if not segments and miner_bucket is not None:
+            segments = [{'bucket': miner_bucket.value, 'start_ms': 0, 'end_ms': None,
+                         'payout_scale': None, 'payout_record': None, 'closed_weeks': None, 'payout_overrides': None}]
+        return segments
+
+    def _payout_rows(self, hotkey: str, end_ms: int, realtime: bool, miner_bucket: Optional[MinerBucket],
+                     debt_ledger, cuts: List[Tuple[int, float]] = ()) -> Optional[Tuple[List[dict], float]]:
+        """Every earning segment's settlement rows through end_ms, oldest first, with payout overrides
+        applied and instant payouts netted, plus the escrow the live segment still holds. Shared by the
+        payout endpoint and the weights (payout_rows_for_payee).
+
+          * a segment with a payout record pays the record's rows;
+          * a closed segment without one pays the weeks it froze;
+          * the live segment pays its frozen weeks, and the rest is settled from its own positions,
+            resuming from the last frozen row.
+        Returns None when a row's unrealized PnL cannot be determined."""
+        segments = self._payout_segments(hotkey, miner_bucket)
+        live = next((s for s in reversed(segments) if s['start_ms'] < end_ms), None)
+        all_rows, deferred_balance = [], 0.0
+        for segment in segments:
+            if segment['start_ms'] >= end_ms or not MinerBucket.from_status(segment['bucket']).is_subaccount_earning:
+                continue
+            record = segment.get('payout_record')
+            frozen = [{**row, 'payout_record': False} for row in segment.get('closed_weeks') or []
+                      if row['end_ms'] <= end_ms]
+            live_cut_ms = []
+            if record:
+                rows = [{**row, 'payout_record': True} for row in record['settlements'] if row['start_ms'] < end_ms]
+            elif segment is not live or (segment.get('end_ms') is not None and segment['end_ms'] <= end_ms) \
+                    or miner_bucket is None or not miner_bucket.is_subaccount_earning:
+                rows = frozen
+            else:
+                positions = self._segment_positions(
+                    self._position_client.get_positions_for_one_hotkey(hotkey, sort_positions=True), segment)
+                # Weeks frozen without the instant payouts taken inside them are settled again from the
+                # frozen row before the first one, split at each cut
+                first_cut_ms = min((cut_ms for cut_ms, _ in cuts if segment['start_ms'] < cut_ms < end_ms), default=None)
+                if first_cut_ms is not None:
+                    frozen = [row for row in frozen if row['end_ms'] <= TimeUtil.ms_at_start_of_week(first_cut_ms)]
+                live_cut_ms = [cut_ms for cut_ms, _ in cuts
+                               if max(segment['start_ms'], frozen[-1]['end_ms'] if frozen else 0) < cut_ms < end_ms]
+                settled = self._settle_segment(hotkey, segment, positions, end_ms, realtime, debt_ledger,
+                                               self._payout_perf_ledger(hotkey, miner_bucket),
+                                               instant_cuts_ms=live_cut_ms, resume=frozen[-1] if frozen else None)
+                if settled is None:
+                    return None
+                tail, deferred_balance = settled
+                rows = frozen + tail
+            for row in rows:
+                row['segment_start_ms'] = segment['start_ms']
+                if row['payout_record'] or row.get('frozen_ms') is not None:
+                    row['instant_paid'] = 0.0  # pinned without the cuts: netted below
+            rows = self._apply_overrides(rows, segment.get('payout_overrides') or {})
+            pinned_cuts = [c for c in cuts if c[0] not in live_cut_ms]
+            all_rows += self._net_instant_payouts(rows, segment, pinned_cuts)
+        return sorted(all_rows, key=lambda w: (w['start_ms'], w['end_ms'])), deferred_balance
+
+    @staticmethod
+    def _apply_overrides(rows: List[dict], overrides: dict) -> List[dict]:
+        """Report computed, override and effective on every row; payout becomes the effective value.
+
+        An override is a segment-week's payout before instant payouts are netted. It replaces the
+        week's computed payout only: the carried balance, high-water mark and escrow are untouched.
+        Rows a week was split into at instant payouts keep what was paid at the cut, and the last
+        row of the week takes the rest of the override."""
+        by_week: Dict[int, List[dict]] = {}
+        for row in rows:
+            row['computed'] = row['payout']
+            row['override'] = None
+            row['effective'] = row['payout']
+            by_week.setdefault(TimeUtil.ms_at_start_of_week(row['start_ms']), []).append(row)
+        for week_ms, week_rows in by_week.items():
+            override = overrides.get(str(week_ms))
+            if override is None:
+                continue
+            amount = float(override['payout_usd'])
+            *earlier, last = week_rows
+            for row in earlier:
+                row['effective'] = row['instant_paid']
+            last['override'] = amount
+            last['effective'] = max(amount - sum(row['effective'] for row in earlier), last['instant_paid'])
+        for row in rows:
+            row['payout'] = row['effective']
+        return rows
+
+    @staticmethod
+    def _net_instant_payouts(rows: List[dict], segment: dict, cuts: List[Tuple[int, float]]) -> List[dict]:
+        """Mark what instant payouts already paid on rows pinned without their cuts (a payout record
+        or the frozen weeks of a closed segment). Each cut taken inside the segment paid its own
+        week up to cut_ms, so its amount is taken from those rows, latest first."""
+        end_ms = segment.get('end_ms')
+        for cut_ms, paid_usd in cuts:
+            if not (segment['start_ms'] < cut_ms and (end_ms is None or cut_ms <= end_ms)):
+                continue
+            week_start_ms = TimeUtil.ms_at_start_of_week(cut_ms)
+            for row in reversed(rows):
+                if paid_usd <= 0:
+                    break
+                if row['start_ms'] < cut_ms and row['end_ms'] > week_start_ms:
+                    take = min(paid_usd, max(0.0, row['payout'] - row['instant_paid']))
+                    row['instant_paid'] += take
+                    paid_usd -= take
+        return rows
+
+    def payout_rows_for_payee(self, payee: str, through_ms: int) -> dict:
+        """The per-week payout table the payout endpoint and the weights both read (D20).
+
+        payee is an entity hotkey (every subaccount's earning segments) or a standard miner's own hotkey.
+        Rows end by through_ms and carry their effective payout before instant payouts are netted.
+        Returns {'rows', 'first_earning_week_ms', 'collateral_factor_by_week', 'missing'}: missing lists
+        the hotkeys whose rows could not be settled (their weeks are left out, not paid as zero)."""
+        entity_data = self.get_entity_data(payee)
+        hotkeys = ([info.synthetic_hotkey for info in entity_data.subaccounts.values()]
+                   if entity_data else [payee])
+        rows, missing = [], []
+        for hotkey in hotkeys:
+            try:
+                miner_bucket = self._challenge_period_client.get_miner_bucket(hotkey, through_ms)
+                settled = self._payout_rows(hotkey, through_ms, False, miner_bucket,
+                                            self._debt_ledger_client.get_ledger(hotkey))
+            except Exception as e:
+                logger.error(f"[ENTITY_MANAGER] payout rows of {hotkey} failed: {e}")
+                settled = None
+            if settled is None:
+                missing.append(hotkey)
+                continue
+            rows += [{**row, 'hotkey': hotkey, 'orders': []} for row in settled[0]]
+        rows.sort(key=lambda w: (w['start_ms'], w['end_ms']))
+        weeks = sorted({TimeUtil.ms_at_start_of_week(row['start_ms']) for row in rows})
+        factors = self.collateral_factors(payee, weeks, through_ms) if entity_data else {}
+        return {
+            'rows': rows,
+            'first_earning_week_ms': self._first_earning_week_ms(hotkeys),
+            'collateral_factor_by_week': factors,
+            'missing': missing,
+        }
+
+    def _first_earning_week_ms(self, hotkeys: List[str]) -> Optional[int]:
+        """The payout week the payee's first earning segment started in. Segments are never deleted,
+        so wiping a ledger cannot move it."""
+        starts = [segment['start_ms'] for hotkey in hotkeys
+                  for segment in self._challenge_period_client.get_bucket_segments(hotkey) or []
+                  if MinerBucket.from_status(segment['bucket']).is_subaccount_earning]
+        return TimeUtil.ms_at_start_of_week(min(starts)) if starts else None
+
+    def collateral_factors(self, entity_hotkey: str, weeks: List[int], now_ms: int) -> Dict[int, float]:
+        """min(1, collateral / required) per payout week (D23). A closed week takes the factor in force
+        the first time it is read after closing and keeps it, so a later change of collateral never
+        restates history; the week still open reads the factor live."""
+        entity_data = self.get_entity_data(entity_hotkey)
+        if entity_data is None:
+            return {week: 1.0 for week in weeks}
+        open_week_ms = TimeUtil.ms_at_start_of_week(now_ms)
+        frozen = dict(entity_data.collateral_factor_by_week)
+        live = None
+        factors, changed = {}, False
+        for week in weeks:
+            if str(week) in frozen:
+                factors[week] = frozen[str(week)]
+                continue
+            if live is None:
+                live = self._live_collateral_factor(entity_hotkey)
+            factors[week] = live
+            if week < open_week_ms:
+                frozen[str(week)] = live
+                changed = True
+        if changed:
+            with self._get_entity_lock(entity_hotkey):
+                entity_data.collateral_factor_by_week.update(frozen)
+            self._write_entities_from_memory_to_disk()
+        return factors
+
+    def _live_collateral_factor(self, entity_hotkey: str) -> float:
+        try:
+            required = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
+            current = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
+        except Exception as e:
+            logger.warning(f"[ENTITY_MANAGER] Failed to fetch entity collateral for {entity_hotkey}: {e}")
+            return 1.0
+        return 1.0 if not required or required <= 0 else min(1.0, (current or 0.0) / required)
+
+    def _legacy_calculate_payout_for_hotkey(
+        self,
+        synthetic_hotkey: str,
+        start_time_ms: int,
+        end_time_ms: Optional[int],
         bucket_override: Optional[MinerBucket] = None,
     ) -> Optional[dict]:
-        """Payout for one subaccount, keyed by synthetic hotkey. See calculate_subaccount_payout.
-        """
+        """The payout before bucket segments, as settle_wound_down_segment settles it for the weights
+        that still read settled segments."""
         realtime = False
         if end_time_ms is None:
             end_time_ms = TimeUtil.now_in_millis()
@@ -2460,7 +2698,7 @@ class EntityManager(ValidatorBroadcastBase):
             # end_time_ms=None takes the realtime branch, which reads unrealized PnL straight off
             # the (now closed) positions rather than hunting for an account snapshot at a timestamp
             # no snapshot was taken at.
-            result = self._calculate_payout_for_hotkey(
+            result = self._legacy_calculate_payout_for_hotkey(
                 synthetic_hotkey, week_start_ms, None, bucket_override=bucket
             )
             if not result:
