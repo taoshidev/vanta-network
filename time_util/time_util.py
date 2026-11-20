@@ -13,11 +13,9 @@ import pandas as pd
 
 from vali_objects.vali_config import TradePair, TradePairSource
 
-pd.set_option('future.no_silent_downcasting', True)
-from pandas.tseries.holiday import USFederalHolidayCalendar  # noqa: E402
-
-import pandas_market_calendars as mcal  # noqa: E402
-from pandas.tseries.holiday import Holiday, nearest_workday, GoodFriday  # noqa: E402
+from pandas.tseries.holiday import USFederalHolidayCalendar
+import pandas_market_calendars as mcal
+from pandas.tseries.holiday import Holiday, nearest_workday, GoodFriday
 from shared_objects.log import logger
 MS_IN_1_HOUR = 3600000
 MS_IN_8_HOURS =  28800000
@@ -229,7 +227,8 @@ class IndicesMarketCalendar:
     @lru_cache(maxsize=3000)
     def extended_session_times_ms(self, et_date: date, market_name: str):
         """(pre, market_open, market_close, post) in ms for an Eastern trading date, or None if the market is closed.
-        On early-close days the calendar sets post equal to market_close, so there is no after-hours session."""
+        Early-close days have no after-hours session: post is set to market_close (pandas_market_calendars 5.x
+        gives them a 13:00-17:00 post-market, which we do not offer)."""
         if market_name == 'NYSE':
             market_calendar = self.nyse_calendar
         elif market_name == 'NASDAQ':
@@ -240,7 +239,11 @@ class IndicesMarketCalendar:
         if schedule.empty:
             return None
         row = schedule.iloc[0]
-        return tuple(TimeUtil.timestamp_to_millis(row[col]) for col in ('pre', 'market_open', 'market_close', 'post'))
+        pre_ms, open_ms, close_ms, post_ms = (TimeUtil.timestamp_to_millis(row[col])
+                                              for col in ('pre', 'market_open', 'market_close', 'post'))
+        if not market_calendar.early_closes(schedule).empty:
+            post_ms = close_ms
+        return pre_ms, open_ms, close_ms, post_ms
 
     def get_equity_session_bounds(self, ticker, timestamp_ms) -> Tuple[str, int, int]:
         """
