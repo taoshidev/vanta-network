@@ -1184,8 +1184,8 @@ def test_admin_move_to_pro_funded_sizes_the_account(manager):
 
     assert success
     manager._entity_client.apply_bucket_account_size.assert_called_once_with(HOTKEY, MinerBucket.PRO_FUNDED)
-    # ...and it is a sizing call only: the account itself is untouched
-    manager._position_client.close_all_positions.assert_not_called()
+    # ...and the account is kept: closed out at the earning boundary, never wiped
+    manager._position_client.close_all_positions.assert_called_once()
     manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
 
 
@@ -1244,7 +1244,7 @@ def test_only_the_hops_onto_a_pro_account_wind_the_standard_account_down(hop_man
 
     assert target.switches_account
     hop_manager._position_client.close_all_positions.assert_called_once_with(
-        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION
+        hotkey=HOTKEY, close_time_ms=NOW_MS - 1, order_source=OrderSource.SUBACCOUNT_PROMOTION
     )
     hop_manager._position_client.archive_positions_for_hotkey.assert_called_once_with(HOTKEY, archive_all=True)
     hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
@@ -1267,7 +1267,7 @@ def test_entering_the_transition_closes_out_the_standard_account(hop_manager):
     assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
     assert closed_in == [MinerBucket.SUBACCOUNT_FUNDED]
     hop_manager._position_client.close_all_positions.assert_called_once_with(
-        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+        hotkey=HOTKEY, close_time_ms=NOW_MS - 1, order_source=OrderSource.SUBACCOUNT_PROMOTION)
     hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
     hop_manager._limit_order_client.cancel_entry_orders.assert_not_called()
     hop_manager._position_client.archive_positions_for_hotkey.assert_not_called()
@@ -1279,8 +1279,8 @@ def test_entering_the_transition_closes_out_the_standard_account(hop_manager):
 def test_pro_funded_keeps_the_account_it_passed_on(hop_manager, challenge_bucket):
     """Passing the pro challenge keeps the same account, but closed out.
 
-    Every position is closed and every limit order cancelled while still in the pro challenge, and
-    PRO_FUNDED is entered 1ms later. Balance and the ledgers carry over, so all-time calmar keeps the
+    Every position is closed 1ms before the move, while still in the pro challenge, and every limit
+    order cancelled. Balance and the ledgers carry over, so all-time calmar keeps the
     ratio the miner passed with; nothing is archived, reset or wiped.
     """
     _in_bucket(hop_manager, challenge_bucket)
@@ -1291,10 +1291,10 @@ def test_pro_funded_keeps_the_account_it_passed_on(hop_manager, challenge_bucket
     assert hop_manager.promote_hotkeys({HOTKEY: challenge_bucket}, NOW_MS)
 
     state = hop_manager.miner_states[HOTKEY]
-    assert (state.current_bucket, state.current_bucket_start_ms) == (MinerBucket.PRO_FUNDED, NOW_MS + 1)
+    assert (state.current_bucket, state.current_bucket_start_ms) == (MinerBucket.PRO_FUNDED, NOW_MS)
     assert closed_in == [challenge_bucket]
     hop_manager._position_client.close_all_positions.assert_called_once_with(
-        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+        hotkey=HOTKEY, close_time_ms=NOW_MS - 1, order_source=OrderSource.SUBACCOUNT_PROMOTION)
     hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
     hop_manager._position_client.archive_positions_for_hotkey.assert_not_called()
     hop_manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
@@ -1852,7 +1852,7 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
 
         self.assertTrue(success, message)
         self.manager._position_client.close_all_positions.assert_called_once_with(
-            hotkey=ORDER_HOTKEY, close_time_ms=ORDER_NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+            hotkey=ORDER_HOTKEY, close_time_ms=ORDER_NOW_MS - 1, order_source=OrderSource.SUBACCOUNT_PROMOTION)
         self.manager._limit_order_client.cancel_limit_order.assert_called_once_with(
             ORDER_HOTKEY, None, "ALL", ORDER_NOW_MS)
         self.manager._limit_order_client.cancel_entry_orders.assert_not_called()
@@ -1868,13 +1868,14 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
             ORDER_HOTKEY, None, "ALL", ORDER_NOW_MS)
         self.manager._limit_order_client.cancel_entry_orders.assert_not_called()
 
-    def test_a_standard_bucket_move_touches_no_orders(self):
+    def test_a_move_between_earning_buckets_cancels_everything(self):
         success, message = self.manager.admin_set_bucket(
             ORDER_HOTKEY, MinerBucket.SUBACCOUNT_ALPHA, ORDER_NOW_MS)
 
         self.assertTrue(success, message)
         self.manager._limit_order_client.cancel_entry_orders.assert_not_called()
-        self.manager._limit_order_client.cancel_limit_order.assert_not_called()
+        self.manager._limit_order_client.cancel_limit_order.assert_called_once_with(
+            ORDER_HOTKEY, None, "ALL", ORDER_NOW_MS)
 
 
 if __name__ == "__main__":

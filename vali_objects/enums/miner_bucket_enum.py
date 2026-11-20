@@ -239,6 +239,14 @@ class MinerBucket(Enum):
                 MinerBucket.PRO_FUNDED
                 )
 
+    def closes_positions_from(self, from_bucket: "MinerBucket") -> bool:
+        """True when entering this bucket from from_bucket closes the open positions: every move into
+        or out of an earning bucket, so each earning bucket is only paid on what it trades itself.
+        An elimination forfeits instead."""
+        return ((from_bucket.is_subaccount_earning or self.is_subaccount_earning)
+                and self != from_bucket
+                and self != MinerBucket.ELIMINATED)
+
 
 # The buckets of a regular miner on the existing rules (a standard miner reaches PLAGIARISM too, known by its record)
 EXISTING_RULES_BUCKETS = (MinerBucket.CHALLENGE, MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.PLAGIARISM)

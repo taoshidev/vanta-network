@@ -899,12 +899,7 @@ class ChallengePeriodManager(CacheController):
             )
             return False
 
-        # Close all existing positions
-        self._position_client.close_all_positions(
-            hotkey=hotkey,
-            close_time_ms=current_time_ms,
-            order_source=OrderSource.SUBACCOUNT_PROMOTION
-        )
+        self._close_out_account(hotkey, current_time_ms)
         # Keep the closed positions and final stats of the account in its bucket segment before
         # anything below archives or resets them
         self._record_wound_down_account(hotkey, current_time_ms)
@@ -925,8 +920,6 @@ class ChallengePeriodManager(CacheController):
         self._miner_account_client.reset_account(hotkey, target_bucket)
         # Archive all positions (disk move + memory removal)
         self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
-        # Cancel all pending limit orders
-        self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
         # Wipe perf ledgers so the new account's performance is tracked from scratch
         self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
         # Delete debt ledger to match new perf ledger checkpoints
@@ -939,14 +932,25 @@ class ChallengePeriodManager(CacheController):
         self.miner_states[hotkey].pro_stats = ProStats()
         return True
 
-    def _close_out(self, hotkey: str, current_time_ms: int) -> None:
-        """Close every open position and cancel every pending limit order, keeping the account."""
+    def _close_out_account(self, hotkey: str, current_time_ms: int) -> None:
+        """Close every position and cancel every limit order, leaving the account and its history."""
         self._position_client.close_all_positions(
             hotkey=hotkey,
-            close_time_ms=current_time_ms,
+            # 1ms before the bucket move, so the close falls inside the segment being left
+            close_time_ms=current_time_ms - 1,
             order_source=OrderSource.SUBACCOUNT_PROMOTION
         )
         self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
+
+    def _leave_bucket(self, hotkey: str, target: MinerBucket, current_time_ms: int) -> bool:
+        """Wind down what the miner is leaving for target: a full account switch, or just closing
+        the positions on a move into or out of an earning bucket that keeps the account. False when
+        the switch failed."""
+        if target.switches_account:
+            return self._switch_account(hotkey, target, current_time_ms)
+        if target.closes_positions_from(self.miner_states[hotkey].current_bucket):
+            self._close_out_account(hotkey, current_time_ms)
+        return True
 
     def promote_hotkeys(self, promotions: dict[str, MinerBucket], current_time_ms: int) -> bool:
         """Promote miners to next tier. promotions maps each miner to the bucket it was evaluated in; one
@@ -967,18 +971,11 @@ class ChallengePeriodManager(CacheController):
                     continue
 
                 # Leave the miner where they are when the account switch or the close out fails: the next refresh
-                # retries, and one miner's failure never stops the others' promotions or the rest of the refresh
+                # retries, and one miner's failure never stops the others' promotions or the rest of the refresh.
+                # PRO_FUNDED keeps the account, but starts flat (closes_positions_from)
                 try:
-                    if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket,
-                                                                                   current_time_ms):
+                    if not self._leave_bucket(hotkey, target_bucket, current_time_ms):
                         continue
-
-                    entry_ms = current_time_ms
-                    if target_bucket == MinerBucket.PRO_FUNDED:
-                        # Keeps the account, but starts flat: everything open is closed in the pro challenge,
-                        # which PRO_FUNDED then enters 1ms after
-                        self._close_out(hotkey, current_time_ms)
-                        entry_ms = current_time_ms + 1
                 except Exception as e:
                     logger.error(f"[CHALLENGE] promotion to {target_bucket.value} failed, left in "
                                  f"{evaluated_bucket.value} to retry next refresh: {e} {state}", exc_info=True)
@@ -986,7 +983,7 @@ class ChallengePeriodManager(CacheController):
 
                 from_state = str(state)
                 with self._buckets_lock:
-                    moved = self.miner_states[hotkey].add_bucket_entry(target_bucket, entry_ms)
+                    moved = self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
                 state_changed |= moved
                 promoted_count += moved
                 self._reconcile_bucket_history([hotkey], current_time_ms)
@@ -1298,8 +1295,9 @@ class ChallengePeriodManager(CacheController):
                 )
                 return False, f"{hotkey} account size update failed, bucket unchanged: {message}"
 
-        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            self._close_out(hotkey, current_time_ms)
+        # Every move into or out of an earning bucket starts flat, the transition entry included
+        if not bucket.switches_account and bucket.closes_positions_from(state.current_bucket):
+            self._close_out_account(hotkey, current_time_ms)
 
         with self._buckets_lock:
             state.add_bucket_entry(bucket, current_time_ms)

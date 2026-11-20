@@ -174,7 +174,7 @@ def test_challenge_to_funded_wipes_the_positions_into_the_challenge_segment(mana
     assert challenge.end_ms == T1
     copied = _copied(manager, challenge)
     assert set(copied) == {"closed_1", "open_1"}
-    assert copied["open_1"]["close_ms"] is not None        # copied after the switch closed it
+    assert copied["open_1"]["close_ms"] == T1 - 1          # copied after the switch closed it
     assert challenge.final_drawdown is not None and challenge.end_balance == 100_000.0
 
     # The live state the statistics read is untouched: archived, and nothing carried over
@@ -195,15 +195,51 @@ def test_pro_funded_keeps_the_account_and_its_positions(manager):
     assert manager.promote_hotkeys({HOTKEY: MinerBucket.PRO_CHALLENGE_FROM_STANDARD}, T5)
 
     pcf = _segment(manager, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, T3)
-    pro_funded = manager._bucket_history.get_live_segment(HOTKEY)
-    assert pro_funded.bucket == MinerBucket.PRO_FUNDED.value
-    assert pcf.end_ms == pro_funded.start_ms
+    pro_funded = _segment(manager, MinerBucket.PRO_FUNDED, T5)
+    assert pcf.end_ms == T5
+    assert _copied(manager, pcf)["pro_open"]["close_ms"] == T5 - 1
     assert set(_copied(manager, pcf)) == {"pro_open"}
     assert _live_uuids(manager) == {"pro_open"}                 # closed, not archived
     assert HOTKEY not in manager._position_client.archived
     assert pro_funded.account_start_ms == T3
     stats = manager.get_bucket_statistics(HOTKEY, bucket="PRO_FUNDED", include=["positions"])
     assert [p["position_uuid"] for p in stats["segments"][0]["positions"]] == ["pro_open"]
+
+
+# ── Close-outs land in the segment being left ─────────────────────────────────
+
+@pytest.mark.parametrize("source, target, closes", [
+    (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, True),        # account switch
+    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION, True),    # keeps the account
+    (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED, True),       # keeps the account
+    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA, True),            # earning to earning
+    (MinerBucket.PRO_FUNDED, MinerBucket.ELIMINATED, False),                        # forfeits instead
+    (MinerBucket.CHALLENGE, MinerBucket.MAINCOMP, False),                           # never earning
+])
+def test_an_admin_move_closes_1ms_before_it_lands(manager, source, target, closes):
+    manager.set_miner_bucket(HOTKEY, source, T0)
+    manager._position_client.add(_position("open", T0 + 1))
+
+    assert manager.admin_set_bucket(HOTKEY, target, T1)[0]
+
+    left = _segment(manager, source, T0)
+    assert left.end_ms == T1 and manager.miner_states[HOTKEY].current_bucket_start_ms == T1
+    position = next(p for p in [*manager._position_client.live.get(HOTKEY, []),
+                                *manager._position_client.archived.get(HOTKEY, [])])
+    if closes:
+        assert position.close_ms == T1 - 1 and left.contains(position.close_ms)
+        manager._limit_order_client.cancel_limit_order.assert_called_with(HOTKEY, None, "ALL", T1)
+    else:
+        assert position.is_open_position
+        manager._limit_order_client.cancel_limit_order.assert_not_called()
+
+
+def test_closes_positions_from_covers_every_earning_boundary():
+    assert MinerBucket.PLAGIARISM.closes_positions_from(MinerBucket.PRO_FUNDED)          # leaving earning
+    assert MinerBucket.PRO_FUNDED.closes_positions_from(MinerBucket.PLAGIARISM)          # entering earning
+    assert not MinerBucket.PRO_FUNDED.closes_positions_from(MinerBucket.PRO_FUNDED)      # no move
+    assert not MinerBucket.ELIMINATED.closes_positions_from(MinerBucket.SUBACCOUNT_FUNDED)
+    assert not MinerBucket.PRO_CHALLENGE_DIRECT.closes_positions_from(MinerBucket.SUBACCOUNT_CHALLENGE)
 
 
 def test_a_closed_segment_keeps_its_snapshot_slice(manager):

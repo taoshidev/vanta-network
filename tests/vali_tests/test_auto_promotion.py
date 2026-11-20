@@ -815,7 +815,7 @@ def test_through_refresh_a_qualifying_account_reaches_grow_on_the_next_refresh_f
     assert state.auto_promotion.path == STEADY and state.auto_promotion.multiplier == 10
     assert hotkey in message
     hop_manager._position_client.close_all_positions.assert_called_once_with(
-        hotkey=hotkey, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+        hotkey=hotkey, close_time_ms=NOW_MS - 1, order_source=OrderSource.SUBACCOUNT_PROMOTION)
     assert entity_manager.get_subaccount_info_for_synthetic(hotkey).account_size == STANDARD_SIZE
 
     _full_refresh(hop_manager, hotkey, NOW_MS + 30_000)
