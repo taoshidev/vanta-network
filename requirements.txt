@@ -1,4 +1,4 @@
-pydantic == 2.10.3
+pydantic == 2.14.4
 polygon-api-client == 1.16.0
 bittensor == 11.3.2
 fastapi == 0.141.1
