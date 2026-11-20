@@ -228,6 +228,13 @@ class ChallengePeriodServer(RPCServerBase):
     def get_payout_overrides_rpc(self, hotkey: str) -> list[dict]:
         return self._manager.get_payout_overrides(hotkey)
 
+    def get_soft_breach_weeks_rpc(self, hotkey: str) -> dict | None:
+        return self._manager.get_soft_breach_weeks(hotkey)
+
+    def admin_set_soft_breach_week_rpc(self, hotkey: str, week_start_ms: int,
+                                       days: list[int] | None) -> Tuple[bool, str]:
+        return self._manager.admin_set_soft_breach_week(hotkey, week_start_ms, days)
+
     def get_drawdown_snapshot_fields_rpc(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
         return self._manager.get_drawdown_snapshot_fields(hotkeys)
 

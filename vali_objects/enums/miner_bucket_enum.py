@@ -263,6 +263,22 @@ LEGACY_BUCKET_NAMES = {LEGACY_TRANSITION_BUCKET: "SUBACCOUNT_FUNDED"}
 EXISTING_RULES_BUCKETS = (MinerBucket.CHALLENGE, MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.PLAGIARISM)
 
 
+def parse_soft_breach_weeks(pro_stats: dict | None) -> dict[int, list[int]]:
+    """ProStats.soft_breach_weeks from a stored pro_stats dict: {week_start_ms: sorted day starts}. A dict
+    written before the latch was kept per week holds soft_breach_days instead, grouped by week here (days
+    already pruned by its 60 day retention are not recreated)."""
+    from time_util.time_util import TimeUtil
+    pro_stats = pro_stats or {}
+    weeks: dict[int, set[int]] = {}
+    if pro_stats.get('soft_breach_weeks') is not None:
+        for week, days in pro_stats['soft_breach_weeks'].items():
+            weeks.setdefault(int(week), set()).update(int(day) for day in days or [])
+    else:
+        for day in pro_stats.get('soft_breach_days') or []:
+            weeks.setdefault(TimeUtil.ms_at_start_of_week(int(day)), set()).add(int(day))
+    return {week: sorted(days) for week, days in sorted(weeks.items())}
+
+
 @dataclass
 class BucketEntry:
     bucket: MinerBucket

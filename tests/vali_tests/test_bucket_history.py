@@ -957,3 +957,35 @@ def test_a_record_forfeits_the_escrow_it_still_holds():
     record = em.calculate_segment_payout_record(HOTKEY, segment, positions, MON + 3 * DAILY_MS)
     row = record["settlements"][-1]
     assert (row["payout"], row["deferred"], row["deferred_forfeited"], row["deferred_balance"]) == (0.0, 100.0, 100.0, 0.0)
+
+
+# ── Soft breach admin REST ────────────────────────────────────────────────────
+
+@pytest.fixture
+def soft_breach_rest():
+    server = _admin_server()
+    server._challenge_period_client.get_soft_breach_weeks.return_value = {WEEK: [WEEK + DAILY_MS]}
+    server._challenge_period_client.admin_set_soft_breach_week.return_value = (True, "updated")
+    app = Flask(__name__)
+    app.route("/admin/soft-breach/<hotkey>", methods=["GET"])(server.get_soft_breach_weeks)
+    app.route("/admin/soft-breach/<hotkey>", methods=["POST"])(server.set_soft_breach_week)
+    return server, app.test_client()
+
+
+def test_rest_soft_breach_actions(soft_breach_rest):
+    server, client = soft_breach_rest
+    assert client.get(f"/admin/soft-breach/{HOTKEY}").get_json()["soft_breach_weeks"] == {str(WEEK): [WEEK + DAILY_MS]}
+    update = server._challenge_period_client.admin_set_soft_breach_week
+    for query, days in ((f"days={WEEK},{WEEK + DAILY_MS}", [WEEK, WEEK + DAILY_MS]), ("days=", []),
+                        ("remove=true", None)):
+        assert client.post(f"/admin/soft-breach/{HOTKEY}?week_start_ms={WEEK}&{query}").status_code == 200
+        update.assert_called_with(HOTKEY, WEEK, days)
+    server._challenge_period_client.get_soft_breach_weeks.return_value = None
+    assert client.get(f"/admin/soft-breach/{HOTKEY}").status_code == 404
+
+
+@pytest.mark.parametrize("query", ["days=1", f"week_start_ms={WEEK}", f"week_start_ms={WEEK}&days=x"])
+def test_rest_soft_breach_rejects_bad_params(soft_breach_rest, query):
+    server, client = soft_breach_rest
+    assert client.post(f"/admin/soft-breach/{HOTKEY}?{query}").status_code == 400
+    server._challenge_period_client.admin_set_soft_breach_week.assert_not_called()

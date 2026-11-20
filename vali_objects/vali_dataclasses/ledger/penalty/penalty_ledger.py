@@ -23,7 +23,7 @@ from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.position_management.position_utils.position_filter import PositionFilter
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket, parse_soft_breach_weeks
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -894,7 +894,7 @@ class PenaltyLedgerManager:
             # ProStats is maintained by ChallengePeriodManager.
             miner_pro_stats = (challenge_period_data.get(miner_hotkey) or {}).get('pro_stats') or {}
             miner_max_drawdown = miner_pro_stats.get('max_drawdown')
-            miner_soft_breach_days = {int(d) for d in (miner_pro_stats.get('soft_breach_days') or [])}
+            miner_breach_weeks = parse_soft_breach_weeks(miner_pro_stats)
 
             # Iterate through checkpoints in the portfolio ledger (only new ones if delta_update)
             checkpoints_processed = 0
@@ -1025,11 +1025,21 @@ class PenaltyLedgerManager:
                 if sealed_weekly is not None:
                     # A closed week is settled
                     weekly_penalty = sealed_weekly.weekly_penalty
-                elif (checkpoint_bucket.soft_breach_applies
-                        and TimeUtil.get_start_of_day_ms(checkpoint_ms - 1) in miner_soft_breach_days):
-                    # A day the live loop saw broken withholds the week even if every 12h sample
-                    # that week looks clean.
-                    weekly_penalty = 0.0
+                elif checkpoint_bucket.soft_breach_applies:
+                    week_start_ms = TimeUtil.ms_at_start_of_week(checkpoint_ms - 1)
+                    week_breached = bool(miner_breach_weeks.get(week_start_ms))
+                    if weekly_penalty < 1.0 and not week_breached:
+                        # The live loop checks the same rule every refresh, so it should have latched this
+                        logger.warning(
+                            f"[PENALTY_LEDGER] {miner_hotkey} checkpoint "
+                            f"{TimeUtil.millis_to_formatted_date_str(checkpoint_ms)} breaches the weekly rules "
+                            f"(weekly_penalty={weekly_penalty}) but the week of "
+                            f"{TimeUtil.millis_to_formatted_date_str(week_start_ms)} has no latched breach day"
+                        )
+                    if week_breached:
+                        # Any day the live loop saw broken withholds the whole payout week, even if every
+                        # 12h sample that week looks clean
+                        weekly_penalty = 0.0
 
                 if is_synthetic_hotkey(miner_hotkey) or standard_miner:
                     # Only the per-checkpoint product is waived on the standard account pipeline - weekly_penalty

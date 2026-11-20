@@ -384,6 +384,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/payout-record/<hotkey>", methods=["POST"])(self.update_payout_record)
         self.app.route("/admin/payout-override/<hotkey>", methods=["GET"])(self.get_payout_overrides)
         self.app.route("/admin/payout-override/<hotkey>", methods=["POST"])(self.set_payout_override)
+        self.app.route("/admin/soft-breach/<hotkey>", methods=["GET"])(self.get_soft_breach_weeks)
+        self.app.route("/admin/soft-breach/<hotkey>", methods=["POST"])(self.set_soft_breach_week)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
         self.app.route("/admin/reset-snapshot/<hotkey>", methods=["POST"])(self.reset_account_snapshot)
@@ -2341,6 +2343,84 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                             'payout_overrides': overrides, 'message': message}), 200
         except Exception as e:
             logger.error(f"Error setting a payout override for {hotkey}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def get_soft_breach_weeks(self, hotkey: str):
+        """
+        List a pro subaccount's latched calmar breach days, by payout week.
+        Requires tier 500 access.
+
+        Example:
+        curl "http://localhost:48888/admin/soft-breach/<hotkey>" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Soft breach endpoint requires tier 500 access'}), 403
+
+        try:
+            weeks = self._challenge_period_client.get_soft_breach_weeks(hotkey)
+            if weeks is None:
+                return jsonify({'error': f'{hotkey} not found'}), 404
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'soft_breach_weeks': {str(week): days for week, days in sorted(weeks.items())},
+            }), 200
+        except Exception as e:
+            logger.error(f"Error reading soft breach weeks for {hotkey}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_soft_breach_week(self, hotkey: str):
+        """
+        Set the calmar breach days of one payout week. A week with any day is withheld; an empty
+        list marks it clean. Applied on the next full penalty ledger rebuild.
+        Requires tier 500 access.
+
+        Query params:
+          week_start_ms: Monday 00:00 UTC of the week (required)
+          days:          comma-separated UTC day starts inside the week; empty marks the week clean
+          remove:        true to drop the week entirely
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/soft-breach/<hotkey>?week_start_ms=1700438400000&days=" \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Soft breach endpoint requires tier 500 access'}), 403
+
+        try:
+            week_start_ms = int(request.args.get('week_start_ms'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'week_start_ms is required and must be an integer'}), 400
+
+        days = None
+        if request.args.get('remove', '').lower() != 'true':
+            raw_days = request.args.get('days')
+            if raw_days is None:
+                return jsonify({'error': 'days is required unless remove=true'}), 400
+            try:
+                days = [int(day) for day in raw_days.split(',') if day.strip()]
+            except ValueError:
+                return jsonify({'error': f'days must be comma-separated integers, got "{raw_days}"'}), 400
+
+        try:
+            success, message = self._challenge_period_client.admin_set_soft_breach_week(hotkey, week_start_ms, days)
+            if not success:
+                return jsonify({'error': message}), 400
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'week_start_ms': week_start_ms,
+                'days': days,
+                'message': message,
+            }), 200
+        except Exception as e:
+            logger.error(f"Error setting soft breach week for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def update_drawdown_criteria(self):

@@ -380,17 +380,35 @@ def test_account_type_validation():
 # Section 2 — State persistence
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _weeks(*days):
+    """ProStats.soft_breach_weeks latching the given UTC days."""
+    weeks = {}
+    for day in days:
+        weeks.setdefault(TimeUtil.ms_at_start_of_week(day), []).append(day)
+    return {week: sorted(d) for week, d in weeks.items()}
+
+
 def test_pro_state_round_trips_through_the_checkpoint():
     """The penalty ledger reads the pro stats and the latch out of the challenge period
     checkpoint, so both have to survive serialization and a validator restart."""
     state = _state(MinerBucket.PRO_FUNDED)
     state.pro_stats = ProStats(calmar=1.5, daily_consistency=0.25, max_drawdown=0.94,
-                               trading_days=42, soft_breach_days=[MIDNIGHT_MS - DAILY_MS, MIDNIGHT_MS])
+                               trading_days=42,
+                               soft_breach_weeks=_weeks(MIDNIGHT_MS - DAILY_MS, MIDNIGHT_MS))
 
     restored = MinerBucketState.from_checkpoint_dict(HOTKEY, state.to_checkpoint_dict())
 
     assert restored.current_bucket is MinerBucket.PRO_FUNDED
     assert restored.pro_stats == state.pro_stats
+
+
+def test_latched_days_from_before_the_weekly_latch_are_grouped_by_week():
+    """M4: a state written with soft_breach_days reads them into their payout weeks."""
+    days = [MIDNIGHT_MS - 8 * DAILY_MS, MIDNIGHT_MS - DAILY_MS, MIDNIGHT_MS]
+    stats = ProStats.from_dict({"calmar": 1.0, "soft_breach_days": days})
+    assert stats.soft_breach_weeks == _weeks(*days)
+    assert all(stats.breach_days(TimeUtil.ms_at_start_of_week(day)) for day in days)
+    assert ProStats.from_dict(stats.to_dict()) == stats
 
 
 def test_pro_stats_default_when_missing_from_the_checkpoint():
@@ -929,7 +947,7 @@ def test_the_latch_records_the_utc_day_a_pro_rule_broke(manager):
     for offset_ms in (0, 30_000, 60_000):
         manager._latch_soft_breaches([HOTKEY], NOW_MS + offset_ms)
 
-    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_weeks == _weeks(MIDNIGHT_MS)
     assert manager.miner_states[HOTKEY].is_soft_breach_latched(MIDNIGHT_MS)
 
 
@@ -944,7 +962,7 @@ def test_a_breach_that_heals_still_leaves_the_day_latched(manager):
     manager._latch_soft_breaches([HOTKEY], NOW_MS + 60_000)
 
     assert manager.miner_states[HOTKEY].soft_breach is False
-    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_weeks == _weeks(MIDNIGHT_MS)
 
 
 def test_refreshing_pro_stats_carries_the_latch(manager):
@@ -958,7 +976,7 @@ def test_refreshing_pro_stats_carries_the_latch(manager):
     stats = _refresh_pro_stats(manager, HOTKEY, _even_ledger(MIN_DAYS, realized_pnl_usd=8_000.0))
 
     assert stats.trading_days == MIN_DAYS  # metrics did recompute
-    assert stats.soft_breach_days == [MIDNIGHT_MS]
+    assert stats.soft_breach_weeks == _weeks(MIDNIGHT_MS)
 
 
 def test_a_clean_day_is_never_latched(manager):
@@ -967,7 +985,8 @@ def test_a_clean_day_is_never_latched(manager):
 
     manager._latch_soft_breaches([HOTKEY], NOW_MS)
 
-    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == []
+    # The week is recorded as checked and clean
+    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_weeks == {TimeUtil.ms_at_start_of_week(NOW_MS): []}
 
 
 def test_a_consistency_breach_alone_is_never_latched(manager):
@@ -981,7 +1000,7 @@ def test_a_consistency_breach_alone_is_never_latched(manager):
     manager._latch_soft_breaches([HOTKEY], NOW_MS)
 
     assert manager.miner_states[HOTKEY].soft_breach is False
-    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == []
+    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_weeks == {TimeUtil.ms_at_start_of_week(NOW_MS): []}
 
 
 @pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_FUNDED,
@@ -993,20 +1012,36 @@ def test_buckets_without_soft_breaches_are_never_latched(manager, bucket):
 
     manager._latch_soft_breaches([HOTKEY], NOW_MS)
 
-    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == []
+    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_weeks == {}
 
 
-def test_latched_days_are_pruned_to_the_retention_window(manager):
-    """Bounded so the challenge period checkpoint cannot grow without limit."""
+def test_latched_weeks_are_never_pruned(manager):
+    """The latch decides whether a closed week was withheld, so old weeks are kept."""
     _seed(manager, HOTKEY, MinerBucket.PRO_FUNDED, _healthy_drawdown())
     manager.miner_states[HOTKEY].pro_stats = _breaching_pro_stats()
-    retention = ValiConfig.PRO_SOFT_BREACH_LATCH_RETENTION_DAYS
-    stale_day = MIDNIGHT_MS - (retention + 5) * DAILY_MS
-    manager.miner_states[HOTKEY].pro_stats.soft_breach_days = [stale_day]
+    stale_day = MIDNIGHT_MS - 400 * DAILY_MS
+    manager.miner_states[HOTKEY].pro_stats.soft_breach_weeks = _weeks(stale_day)
 
     manager._latch_soft_breaches([HOTKEY], NOW_MS)
 
-    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_weeks == {**_weeks(stale_day), **_weeks(MIDNIGHT_MS)}
+
+
+def test_admin_sets_and_drops_a_weeks_breach_days(manager):
+    _seed(manager, HOTKEY, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    week = TimeUtil.ms_at_start_of_week(MIDNIGHT_MS)
+    with patch.object(manager, "_save_to_disk"):
+        assert manager.admin_set_soft_breach_week(HOTKEY, week, [MIDNIGHT_MS])[0]
+        assert manager.get_soft_breach_weeks(HOTKEY) == {week: [MIDNIGHT_MS]}
+        assert manager.admin_set_soft_breach_week(HOTKEY, week, [])[0]
+        assert manager.get_soft_breach_weeks(HOTKEY) == {week: []}
+        assert manager.admin_set_soft_breach_week(HOTKEY, week, None)[0]
+        assert manager.get_soft_breach_weeks(HOTKEY) == {}
+        assert not manager.admin_set_soft_breach_week(HOTKEY, week + 1, [])[0]
+        assert not manager.admin_set_soft_breach_week(HOTKEY, week, [week + 7 * DAILY_MS])[0]
+        assert not manager.admin_set_soft_breach_week(HOTKEY, week, [MIDNIGHT_MS + 1])[0]
+        assert not manager.admin_set_soft_breach_week("unknown", week, [])[0]
+    assert manager.get_soft_breach_weeks("unknown") is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1018,7 +1053,7 @@ def _eliminated_state(manager, hk: str, bucket=MinerBucket.PRO_FUNDED) -> MinerB
     state = MinerBucketState(hk, [BucketEntry(bucket, NOW_MS - 10 * DAILY_MS)])
     state.drawdown = _healthy_drawdown(1.07)
     state.pro_stats = _passing_pro_stats()
-    state.pro_stats.soft_breach_days = [MIDNIGHT_MS - DAILY_MS]
+    state.pro_stats.soft_breach_weeks = _weeks(MIDNIGHT_MS - DAILY_MS)
     manager.miner_states[hk] = state
     state.add_bucket_entry(MinerBucket.ELIMINATED, NOW_MS)
     return state
@@ -1077,7 +1112,7 @@ def test_a_pro_revert_keeps_the_stats_the_latch_and_the_trailing_loss_limit(mana
         assert manager.revert_elimination(HOTKEY)
 
     expected = _passing_pro_stats()
-    expected.soft_breach_days = [MIDNIGHT_MS - DAILY_MS]
+    expected.soft_breach_weeks = _weeks(MIDNIGHT_MS - DAILY_MS)
     assert state.pro_stats == expected
     assert state.drawdown.eod_hwm == pytest.approx(1.07)
     assert state.drawdown.last_eod_equity == pytest.approx(1.07)
@@ -1143,7 +1178,7 @@ def test_switching_account_clears_the_pro_stats_and_the_latch(manager):
     _seed(manager, HOTKEY, MinerBucket.PRO_CHALLENGE_DIRECT, _healthy_drawdown())
     manager.miner_states[HOTKEY].pro_stats = ProStats(calmar=2.0, daily_consistency=0.1,
                                                       max_drawdown=0.8, trading_days=120,
-                                                      soft_breach_days=[MIDNIGHT_MS])
+                                                      soft_breach_weeks=_weeks(MIDNIGHT_MS))
 
     assert manager._switch_account(HOTKEY, MinerBucket.PRO_CHALLENGE_DIRECT, NOW_MS) is True
 

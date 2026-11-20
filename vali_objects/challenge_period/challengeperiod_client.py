@@ -137,6 +137,15 @@ class ChallengePeriodClient(RPCClientBase):
         """The payout overrides of a miner's segments."""
         return self._server.get_payout_overrides_rpc(hotkey)
 
+    def get_soft_breach_weeks(self, hotkey: str) -> dict | None:
+        """Week start -> latched calmar breach days."""
+        return self._server.get_soft_breach_weeks_rpc(hotkey)
+
+    def admin_set_soft_breach_week(self, hotkey: str, week_start_ms: int,
+                                   days: list[int] | None) -> Tuple[bool, str]:
+        """Set one week's breached days (None drops the week). Returns (success, message)."""
+        return self._server.admin_set_soft_breach_week_rpc(hotkey, week_start_ms, days)
+
     def get_drawdown_snapshot_fields(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
         """Per-hotkey drawdown fields stamped onto account snapshots."""
         return self._server.get_drawdown_snapshot_fields_rpc(hotkeys)
