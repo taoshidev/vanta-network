@@ -1046,13 +1046,14 @@ class SubtensorOpsManager(CacheController):
             return None
 
     def _fetch_metagraph(self):
-        """bt.Subtensor has no .metagraph() method in v11 (confirmed via inspection) - fetch via the
-        module-level bt.metagraph.fetch(view, netuid) function instead. Test mode keeps calling the
-        mockable self.subtensor.metagraph(netuid) seam so existing mock setups
-        (_create_mock_subtensor/set_mock_metagraph_data) keep working unchanged."""
+        """bt.Subtensor has no top-level .metagraph() method in v11 (confirmed via inspection) -
+        per MIGRATION-GUIDE.md ("The metagraph"), fetch via subtensor.subnets.metagraph(netuid)
+        instead, the sync-wrapped equivalent of `await client.subnets.metagraph(netuid=...)`. Test
+        mode keeps calling the mockable self.subtensor.metagraph(netuid) seam so existing mock
+        setups (_create_mock_subtensor/set_mock_metagraph_data) keep working unchanged."""
         if self.running_unit_tests:
             return self.subtensor.metagraph(self.config.netuid)
-        return bt.metagraph.fetch(self.subtensor, self.config.netuid)
+        return self.subtensor.subnets.metagraph(self.config.netuid)
 
     def update_metagraph(self):
         if not self.refresh_allowed(self.interval_wait_time_ms):

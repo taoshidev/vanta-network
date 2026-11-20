@@ -138,9 +138,9 @@ def main():
         subtensor = bt.Subtensor(network=args.network)
         print(f"Connected to subtensor: {subtensor.network}")
 
-        # bt.Subtensor has no .metagraph() method in v11; fetch via the module-level
-        # bt.metagraph.fetch(view, netuid) function instead.
-        metagraph = bt.metagraph.fetch(subtensor, args.netuid)
+        # bt.Subtensor has no top-level .metagraph() method in v11; fetch via
+        # subtensor.subnets.metagraph(netuid) instead (see MIGRATION-GUIDE.md "The metagraph").
+        metagraph = subtensor.subnets.metagraph(args.netuid)
         current_hotkeys = set(metagraph.hotkeys) if metagraph.hotkeys else set()
         print(f"✓ Loaded metagraph: {len(current_hotkeys)} hotkeys currently registered")
     except Exception as e:

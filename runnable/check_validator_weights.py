@@ -63,10 +63,10 @@ def check_validator_weights(
 
         print("-" * 80)
 
-        # Get metagraph - bt.Subtensor has no .metagraph() method in v11; fetch via the
-        # module-level bt.metagraph.fetch(view, netuid) function instead.
+        # Get metagraph - bt.Subtensor has no top-level .metagraph() method in v11; fetch via
+        # subtensor.subnets.metagraph(netuid) instead (see MIGRATION-GUIDE.md "The metagraph").
         print("Fetching metagraph...")
-        metagraph = bt.metagraph.fetch(subtensor, netuid)
+        metagraph = subtensor.subnets.metagraph(netuid)
 
         # Find the validator's UID
         validator_uid = None
