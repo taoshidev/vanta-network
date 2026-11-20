@@ -770,3 +770,21 @@ def test_an_override_on_a_closed_week_reaches_the_overflow(scenario):
     after = DebtBasedScoring.payout_table_target(em.payout_rows_for_payee("entity", W(3)), emissions, W(3))
     assert (after['overflow'], after['target']) == (150.0, 250.0)
     assert [w['unpaid'] for w in after['weeks']] == [0.0, 150.0, 100.0]
+
+
+def test_wiping_a_debt_ledger_leaves_the_owed_weeks_and_the_start_alone(scenario):
+    """E32: the table is built from segments, records and frozen rows, so a ledger restarted after the weeks
+    froze moves neither the payee's start nor any earlier week."""
+    s = scenario
+    pro_funded_from_week_1(s)
+    s.trade(W(1, 1), W(1, 2), 500.0)
+    s.trade(W(2, 1), W(2, 2), 100.0)
+    s.run_until(W(3, 0.5))
+    em = _entity_view(s)
+    before = em.payout_rows_for_payee("entity", W(3))
+
+    em._debt_ledger_client = SimpleNamespace(get_ledger=lambda _hk: None)
+    after = em.payout_rows_for_payee("entity", W(3))
+    by_week = lambda table: {r['start_ms']: r['payout'] for r in table['rows']}
+    assert by_week(after) == by_week(before) == {W(0): 200.0, W(1): 500.0, W(2): 100.0}
+    assert after['first_earning_week_ms'] == before['first_earning_week_ms'] == W(0)

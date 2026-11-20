@@ -886,9 +886,9 @@ def _payouts(rows):
 
 
 def test_a_record_pays_every_week_of_its_segment_and_agrees_with_the_settled_segment():
-    """Rule 5, a subaccount leaving SUBACCOUNT_FUNDED. Development settles only the payout week of the switch
-    (earlier weeks were paid by the regular path); the record pins every week of the segment, and its last
-    week matches what development settles."""
+    """Rule 5, a subaccount leaving SUBACCOUNT_FUNDED. Development settled only the payout week of the switch
+    (earlier weeks were paid by the regular path), $50 here; the record pins every week of the segment, and its
+    last week matches that settlement."""
     hotkey, switch_ms = "entity_hk_1", MON + WK + 3 * DAILY_MS
     positions = [_closed("a", MON + DAILY_MS, MON + 2 * DAILY_MS, 100.0, hotkey),
                  _closed("b", MON + WK + DAILY_MS, switch_ms - 1, 50.0, hotkey)]
@@ -899,13 +899,10 @@ def test_a_record_pays_every_week_of_its_segment_and_agrees_with_the_settled_seg
     segment = {"hotkey": hotkey, "bucket": "SUBACCOUNT_FUNDED", "start_ms": MON, "end_ms": None}
 
     record = em.calculate_segment_payout_record(hotkey, segment, [p.to_dict() for p in positions], switch_ms)
-    assert em.settle_wound_down_segment(hotkey, "SUBACCOUNT_FUNDED", switch_ms)
 
     assert _payouts(record["settlements"]) == [(MON, 100.0), (MON + WK, 50.0)]
     assert record["payout_usd"] == 150.0 and record["end_ms"] == switch_ms
     assert all(row["payout_record"] for row in record["settlements"])
-    development = settled[0]
-    assert (development[1], development[5]) == (MON + WK, record["settlements"][-1]["payout"])
 
 
 def test_a_standard_miners_record_matches_the_weeks_development_settles():

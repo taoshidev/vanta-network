@@ -897,11 +897,9 @@ class ChallengePeriodManager(CacheController):
             logger.error(f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - its payout record "
                          f"could not be calculated; the positions are closed and the move is retried")
             return False
-        # Track payout information already gathered before promotion since account will be wound down
+        # A standard miner's weights still read the weeks it settles here
         from_bucket = self.miner_states[hotkey].current_bucket
-        if is_synthetic_hotkey(hotkey) and from_bucket.is_subaccount_earning:
-            self._entity_client.settle_wound_down_segment(hotkey, from_bucket.value, current_time_ms)
-        elif record is not None and from_bucket.is_subaccount_earning:
+        if record is not None and from_bucket.is_subaccount_earning:
             if not self._settle_standard_miner_segment(hotkey, record, from_bucket, current_time_ms):
                 logger.error(f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - its earnings "
                              f"could not be settled; the positions are closed and the move is retried")

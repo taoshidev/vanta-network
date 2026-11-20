@@ -254,7 +254,6 @@ class TestSettlingAtTheSwitch(TestBase):
         self.assertEqual(self._pinned(), [(self.last_week, FUNDED.value, 100.0, 100.0, 1.0),
                                           (self.week_start, FUNDED.value, 50.0, 50.0, 1.0)])
         self.assertTrue(all(c.args[3] == NOW_MS for c in self.settle.call_args_list))
-        self.entity.settle_wound_down_segment.assert_not_called()
         self.manager._debt_ledger_client.delete_debt_ledger.assert_called_once_with(HOTKEY)
         self.assertEqual(self.records[HOTKEY], record(pro_account_size=PRO_SIZE, trading_account_size=PRO_SIZE))
 
@@ -317,11 +316,10 @@ class TestSettlingAtTheSwitch(TestBase):
                 self.manager._debt_ledger_client.delete_debt_ledger.assert_not_called()
                 self.assertEqual(self.records[HOTKEY], record(pro_account_size=PRO_SIZE))
 
-    def test_a_subaccount_still_settles_through_its_entity(self):
+    def test_a_subaccount_settles_nothing_in_the_seal_ledger(self):
         self.manager.set_miner_bucket(SUBACCOUNT, FUNDED, NOW_MS - 10 * ValiConfig.DAILY_MS)
         self.manager.admin_set_bucket(SUBACCOUNT, GROW, NOW_MS)
-        self.entity.settle_wound_down_segment.assert_called_once_with(SUBACCOUNT, FUNDED.value, NOW_MS)
-        self.settle.assert_not_called()
+        self.settle.assert_not_called()  # a subaccount is paid from its segment's payout record
 
     def _moved_out_by_an_admin(self, from_bucket, ledger):
         self.settle.reset_mock()
