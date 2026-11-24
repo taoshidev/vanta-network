@@ -113,6 +113,16 @@ class ValidatorBase:
         )
         return False, synapse.dendrite.hotkey
 
+    async def verify_fn(self, synapse) -> None:
+        """Refuse a request that carries no signature, then run the axon's own check.
+
+        Every bt.Dendrite signs its requests, so a legitimate sender always has one.
+        """
+        if synapse.dendrite is None or not synapse.dendrite.signature:
+            hotkey = synapse.dendrite.hotkey if synapse.dendrite is not None else None
+            raise Exception(f"Unsigned {synapse.name} request claiming hotkey {hotkey}")
+        await self.axon.default_verify(synapse)
+
     @staticmethod
     def get_config():
         # Step 2: Set up the configuration parser
@@ -264,41 +274,79 @@ class ValidatorBase:
         def asl_blacklist_fn(synapse: template.protocol.AccountSizeLocks) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_client)
 
+        # The axon's verify needs a signature-less request refused (see verify_fn); attach checks each one is
+        # typed as its synapse and returns None
+        async def rs_verify_fn(synapse: template.protocol.SendSignal) -> None:
+            await self.verify_fn(synapse)
+
+        async def gp_verify_fn(synapse: template.protocol.GetPositions) -> None:
+            await self.verify_fn(synapse)
+
+        async def cr_verify_fn(synapse: template.protocol.CollateralRecord) -> None:
+            await self.verify_fn(synapse)
+
+        async def as_verify_fn(synapse: template.protocol.AssetSelection) -> None:
+            await self.verify_fn(synapse)
+
+        async def sr_verify_fn(synapse: template.protocol.SubaccountRegistration) -> None:
+            await self.verify_fn(synapse)
+
+        async def eeu_verify_fn(synapse: template.protocol.EntityEndpointUpdate) -> None:
+            await self.verify_fn(synapse)
+
+        async def smo_verify_fn(synapse: template.protocol.StandardMinerOpening) -> None:
+            await self.verify_fn(synapse)
+
+        async def smr_verify_fn(synapse: template.protocol.StandardMinerRecord) -> None:
+            await self.verify_fn(synapse)
+
+        async def asl_verify_fn(synapse: template.protocol.AccountSizeLocks) -> None:
+            await self.verify_fn(synapse)
+
         self.axon.attach(
             forward_fn=self.receive_signal,
-            blacklist_fn=rs_blacklist_fn
+            blacklist_fn=rs_blacklist_fn,
+            verify_fn=rs_verify_fn
         )
         self.axon.attach(
             forward_fn=self.get_positions,
-            blacklist_fn=gp_blacklist_fn
+            blacklist_fn=gp_blacklist_fn,
+            verify_fn=gp_verify_fn
         )
         self.axon.attach(
             forward_fn=self.receive_collateral_record,
-            blacklist_fn=cr_blacklist_fn
+            blacklist_fn=cr_blacklist_fn,
+            verify_fn=cr_verify_fn
         )
         self.axon.attach(
             forward_fn=self.receive_asset_selection,
-            blacklist_fn=as_blacklist_fn
+            blacklist_fn=as_blacklist_fn,
+            verify_fn=as_verify_fn
         )
         self.axon.attach(
             forward_fn=self.receive_subaccount_registration,
-            blacklist_fn=sr_blacklist_fn
+            blacklist_fn=sr_blacklist_fn,
+            verify_fn=sr_verify_fn
         )
         self.axon.attach(
             forward_fn=self._entity_client.receive_entity_endpoint_synapse,
-            blacklist_fn=eeu_blacklist_fn
+            blacklist_fn=eeu_blacklist_fn,
+            verify_fn=eeu_verify_fn
         )
         self.axon.attach(
             forward_fn=self.receive_standard_miner_opening,
-            blacklist_fn=smo_blacklist_fn
+            blacklist_fn=smo_blacklist_fn,
+            verify_fn=smo_verify_fn
         )
         self.axon.attach(
             forward_fn=self.receive_standard_miner_record,
-            blacklist_fn=smr_blacklist_fn
+            blacklist_fn=smr_blacklist_fn,
+            verify_fn=smr_verify_fn
         )
         self.axon.attach(
             forward_fn=self.receive_size_locks,
-            blacklist_fn=asl_blacklist_fn
+            blacklist_fn=asl_blacklist_fn,
+            verify_fn=asl_verify_fn
         )
 
         # Serve passes the axon information to the network + netuid we are hosting on.
