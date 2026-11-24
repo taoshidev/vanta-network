@@ -113,6 +113,24 @@ class ValidatorBase:
         )
         return False, synapse.dendrite.hotkey
 
+    def broadcast_blacklist_fn(self, synapse) -> Tuple[bool, str]:
+        """Blacklist for the validator broadcasts: only the mothership sends them, and the mothership takes none.
+
+        Refused here, before the request body is read, rather than left to each receiver's verify_broadcast_sender
+        (which still checks). The axon runs this on the claimed hotkey before verify_fn checks its signature, and
+        a request has to pass both.
+        """
+        from vali_objects.utils.vali_utils import ValiUtils
+        sender_hotkey = synapse.dendrite.hotkey
+        is_testnet = self.config.netuid in (116, 171)
+        if ValiUtils.is_mothership_hotkey(self.wallet.hotkey.ss58_address, is_testnet):
+            logger.warning(f"Blacklisting {synapse.name} from {sender_hotkey}: the mothership takes no broadcasts")
+            return True, sender_hotkey
+        if not ValiUtils.is_mothership_hotkey(sender_hotkey, is_testnet):
+            logger.warning(f"Blacklisting {synapse.name} from {sender_hotkey}: only the mothership broadcasts")
+            return True, sender_hotkey
+        return self.blacklist_fn(synapse, self.metagraph_client)
+
     async def verify_fn(self, synapse) -> None:
         """Refuse a request that carries no signature, then run the axon's own check.
 
@@ -253,26 +271,27 @@ class ValidatorBase:
         def gp_blacklist_fn(synapse: template.protocol.GetPositions) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_client)
 
+        # Validator broadcasts: mothership to the other validators only (see broadcast_blacklist_fn)
         def cr_blacklist_fn(synapse: template.protocol.CollateralRecord) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+            return self.broadcast_blacklist_fn(synapse)
 
         def as_blacklist_fn(synapse: template.protocol.AssetSelection) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+            return self.broadcast_blacklist_fn(synapse)
 
         def sr_blacklist_fn(synapse: template.protocol.SubaccountRegistration) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+            return self.broadcast_blacklist_fn(synapse)
 
         def eeu_blacklist_fn(synapse: template.protocol.EntityEndpointUpdate) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+            return self.broadcast_blacklist_fn(synapse)
 
         def smo_blacklist_fn(synapse: template.protocol.StandardMinerOpening) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+            return self.broadcast_blacklist_fn(synapse)
 
         def smr_blacklist_fn(synapse: template.protocol.StandardMinerRecord) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+            return self.broadcast_blacklist_fn(synapse)
 
         def asl_blacklist_fn(synapse: template.protocol.AccountSizeLocks) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+            return self.broadcast_blacklist_fn(synapse)
 
         # The axon's verify needs a signature-less request refused (see verify_fn); attach checks each one is
         # typed as its synapse and returns None

@@ -6,6 +6,8 @@ bittensor's Axon.default_verify only checks a signature that is present, so a re
 hotkey it claims. ValidatorBase.wire_axon attaches a verify_fn to every synapse that refuses an unsigned request
 before running the default check. These tests wire a real bt.Axon (never served or started) and run its attached
 verify functions, which is what the axon middleware calls on each request.
+
+The validator broadcasts are also blacklisted unless they come from the mothership, and the mothership takes none.
 """
 import asyncio
 import socket
@@ -32,6 +34,8 @@ SYNAPSE_TYPES = [
     protocol.StandardMinerRecord,
     protocol.AccountSizeLocks,
 ]
+MINER_TYPES = [protocol.SendSignal, protocol.GetPositions]
+BROADCAST_TYPES = [t for t in SYNAPSE_TYPES if t not in MINER_TYPES]
 
 
 class _EntityClientStub:
@@ -141,6 +145,61 @@ class TestAxonSignatureVerification(unittest.TestCase):
         self._verify(synapse)
         with self.assertRaisesRegex(Exception, "Nonce is too old"):
             self._verify(synapse)
+
+    # ==================== Broadcast blacklist ====================
+
+    def _blacklisted(self, synapse_cls, sender_hotkey: str) -> bool:
+        synapse = synapse_cls()
+        synapse.dendrite.hotkey = sender_hotkey
+        blacklisted, _ = self.axon.blacklist_fns[synapse.name](synapse)
+        return blacklisted
+
+    def test_broadcast_from_the_mothership_is_taken(self):
+        for synapse_cls in BROADCAST_TYPES:
+            with self.subTest(synapse=synapse_cls.__name__):
+                self.assertFalse(self._blacklisted(synapse_cls, ValiConfig.MOTHERSHIP_HOTKEY))
+
+    def test_broadcast_from_another_registered_hotkey_is_refused(self):
+        # Registered in the metagraph (the Mock says so) but not the mothership: another validator or a miner
+        for synapse_cls in BROADCAST_TYPES:
+            with self.subTest(synapse=synapse_cls.__name__):
+                self.assertTrue(self._blacklisted(synapse_cls, self.sender_keypair.ss58_address))
+
+    def test_broadcast_from_the_testnet_mothership_is_refused_on_mainnet(self):
+        for synapse_cls in BROADCAST_TYPES:
+            with self.subTest(synapse=synapse_cls.__name__):
+                self.assertTrue(self._blacklisted(synapse_cls, ValiConfig.MOTHERSHIP_HOTKEY_TESTNET))
+
+    def test_testnet_takes_broadcasts_from_the_testnet_mothership_only(self):
+        with patch.object(self.validator.config, "netuid", 116):
+            for synapse_cls in BROADCAST_TYPES:
+                with self.subTest(synapse=synapse_cls.__name__):
+                    self.assertFalse(self._blacklisted(synapse_cls, ValiConfig.MOTHERSHIP_HOTKEY_TESTNET))
+                    self.assertTrue(self._blacklisted(synapse_cls, ValiConfig.MOTHERSHIP_HOTKEY))
+
+    def test_mothership_takes_no_broadcasts(self):
+        # This validator made the mothership: refuses its own hotkey and everyone else's
+        with patch.object(ValiConfig, "MOTHERSHIP_HOTKEY", self.validator_keypair.ss58_address):
+            for synapse_cls in BROADCAST_TYPES:
+                for sender in (self.validator_keypair.ss58_address, self.sender_keypair.ss58_address):
+                    with self.subTest(synapse=synapse_cls.__name__, sender=sender):
+                        self.assertTrue(self._blacklisted(synapse_cls, sender))
+
+    def test_mothership_still_takes_miner_requests(self):
+        with patch.object(ValiConfig, "MOTHERSHIP_HOTKEY", self.validator_keypair.ss58_address):
+            for synapse_cls in MINER_TYPES:
+                with self.subTest(synapse=synapse_cls.__name__):
+                    self.assertFalse(self._blacklisted(synapse_cls, self.sender_keypair.ss58_address))
+
+    def test_miner_requests_are_not_limited_to_the_mothership(self):
+        for synapse_cls in MINER_TYPES:
+            with self.subTest(synapse=synapse_cls.__name__):
+                self.assertFalse(self._blacklisted(synapse_cls, self.sender_keypair.ss58_address))
+
+    def test_unregistered_mothership_hotkey_is_still_refused(self):
+        # The metagraph check still applies behind the mothership check
+        with patch.object(self.validator.metagraph_client, "has_hotkey", return_value=False):
+            self.assertTrue(self._blacklisted(protocol.SubaccountRegistration, ValiConfig.MOTHERSHIP_HOTKEY))
 
 
 if __name__ == "__main__":
