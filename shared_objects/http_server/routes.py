@@ -38,7 +38,7 @@ def register_handler(
     """Registers POST /{path}. `handler(body, caller_hotkey) -> response_model` runs in
     thread_pool; `authz_check(caller_hotkey)` (raise to reject) runs first, on the event loop."""
 
-    async def endpoint(body: request_model, hotkey: str = Depends(caller_hotkey)):
+    async def endpoint(body: request_model, hotkey: str = Depends(caller_hotkey)):  # pyright: ignore[reportInvalidTypeForm]
         try:
             authz_check(hotkey)
         except AuthError as e:

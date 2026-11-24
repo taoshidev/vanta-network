@@ -36,7 +36,7 @@ import traceback  # noqa: E402
 
 import bittensor as bt  # noqa: E402
 
-from neurons.validator_base import ValidatorBase  # noqa: E402  (static get_config for config parity)
+from vali_objects.utils.vali_utils import ValiUtils  # noqa: E402  (shared config parser for config parity)
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext  # noqa: E402
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator  # noqa: E402
 from shared_objects.slack_notifier import SlackNotifier  # noqa: E402
@@ -64,7 +64,7 @@ def main() -> int:
     # Reuse the validator's config parser for exact parity with core (netuid, wallet.*, serve,
     # subtensor.*, slack, --validator-hotkey). Wallet args are parsed as STRINGS only — no wallet is
     # loaded here.
-    config = ValidatorBase.get_config()
+    config = ValiUtils.get_config()
     logger.setLevel(logging.INFO)
 
     is_mainnet = (config.netuid == 8)

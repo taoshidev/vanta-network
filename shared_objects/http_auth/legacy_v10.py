@@ -14,8 +14,7 @@ hash of the raw body bytes), so it must be recomputed per message type using
 vanta_protocol's LEGACY_HASH_FIELDS.
 
 This is intentionally a bridge, not a long-term scheme: it doesn't bind the HTTP method
-or path (unlike btauth/1), and should be disabled (--legacy-auth-enabled=False) once no
-more v10 peers are observed. See SIGNED-REQUESTS.md's "Accepting legacy (v10 SDK)
+or path (unlike btauth/1). See SIGNED-REQUESTS.md's "Accepting legacy (v10 SDK)
 callers" section, and MIGRATION-GUIDE.md's "Axon, Dendrite, and Synapse are gone" section.
 
 Verified byte-for-byte against bittensor 10.3.0's actual source

@@ -13,10 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-try:
-    from fastapi import FastAPI
-except ImportError:  # pragma: no cover - fastapi is a hard requirement at runtime
-    FastAPI = None
+from fastapi import FastAPI
 
 from shared_objects.http_auth import AuthErrorTypes, AuthVerifier
 from shared_objects.log import logger
@@ -62,9 +59,7 @@ def caller_hotkey(request: Request) -> str:
     return request.state.caller_hotkey
 
 
-def build_app(verifier: AuthVerifier, legacy_hash_fields_by_path: dict) -> "FastAPI":
-    if FastAPI is None:
-        raise RuntimeError("fastapi is required for shared_objects.http_server")
+def build_app(verifier: AuthVerifier, legacy_hash_fields_by_path: dict) -> FastAPI:
     app = FastAPI()
     app.add_middleware(BtAuthMiddleware, verifier=verifier, legacy_hash_fields_by_path=legacy_hash_fields_by_path)
     return app

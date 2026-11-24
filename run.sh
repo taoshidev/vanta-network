@@ -240,9 +240,9 @@ while [[ $# -gt 0 ]]; do
   fi
 done
 
-# REST/WS split, only when --serve is set. Core gets --no-spawn-api (else its spawned copies and
-# the standalone apps double-bind 48888/8765/50014/50022); --netuid/--slack-webhook-url are
-# forwarded to the API apps (netuid drives is_mainnet in REST). No --serve = today's behavior.
+# REST/WS split, only when --serve is set. Core never spawns REST/WS itself (they always run as
+# their own PM2 apps); --netuid/--slack-webhook-url are forwarded to the API apps (netuid drives
+# is_mainnet in REST). No --serve = no REST/WS at all.
 netuid_value=""
 slack_webhook_value=""
 split_state_enabled=false
@@ -320,8 +320,6 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 
 if [ "$serve_enabled" = true ]; then
-    args+=("--no-spawn-api")
-
     if [ -n "$netuid_value" ]; then
         rest_args+=("--netuid" "$netuid_value")
     fi

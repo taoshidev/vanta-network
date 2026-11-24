@@ -2,13 +2,13 @@
 # Copyright (c) 2024 Yuma Rao
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
+import concurrent.futures
 import os
 import sys
 import threading
 import signal
 
 from vali_objects.enums.misc import SynapseMethod
-from vanta_api.validator_api_manager import ValidatorAPIManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
 from entity_management.entity_utils import is_synthetic_hotkey
 
@@ -20,13 +20,18 @@ import bittensor as bt
 
 from typing import Tuple
 from setproctitle import setproctitle
-from neurons.validator_base import ValidatorBase
+from vali_objects.utils.vali_utils import ValiUtils
+import vanta_protocol
 from vanta_protocol import (
     GetPositionsRequest,
     GetPositionsResponse,
     SendSignalRequest,
     SendSignalResponse,
 )
+from shared_objects.http_auth import AuthVerifier
+from shared_objects.http_server import HttpServer, build_app, register_handler
+from shared_objects.locks.subtensor_lock import get_subtensor_lock
+from shared_objects.net_utils import get_external_ip
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
 from vali_objects.data_sync.order_sync_state import OrderSyncState
@@ -60,6 +65,7 @@ from entity_management.entity_client import EntityClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.contract.contract_client import ContractClient
 
 def is_shutdown() -> bool:
     """Check if shutdown is in progress via ShutdownCoordinator."""
@@ -95,11 +101,11 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGALRM, alarm_handler)
 
 
-class Validator(ValidatorBase):
+class Validator:
+
     def __init__(self):
         setproctitle(f"vali_{self.__class__.__name__}")
-        # Try to read the file meta/meta.json and print it out
-        # Note: Use print() here since self.config (and its logging level) isn't parsed yet
+        # Use print() here since self.config (and its logging level) isn't parsed yet
         try:
             with open("meta/meta.json", "r") as f:
                 meta_content = f.read()
@@ -108,10 +114,11 @@ class Validator(ValidatorBase):
             print(f"Error reading meta/meta.json: {e}")
 
         # Read config before migrations: the role flags gate what runs below.
-        self.config = self.get_config()
+        self.config = ValiUtils.get_config()
         self.orders_app = getattr(self.config, 'orders_app', False)
         self.split_state = getattr(self.config, 'split_state', False)
         self.is_mainnet = self.config.netuid == 8
+
         # Consensus-affecting testnet knobs (vali_objects/vali_config.py) are inherited
         # through the environment, so a testnet deploy file copied onto a mainnet host
         # would silently diverge this validator's weights. Refuse to start instead.
@@ -155,8 +162,7 @@ class Validator(ValidatorBase):
         # When split, the order side (vanta-orders) and sync side (core) coordinate through
         # CommonDataServer; the monolith uses the in-memory equivalent.
         self.order_sync = OrderSyncClient() if (self.orders_app or self.split_state) else OrderSyncState()
-        # ValiConfig.HL_USE_TESTNET = not self.is_mainnet
-        # Ensure the directory for logging exists, else create one.
+
         if not os.path.exists(self.config.full_path):
             os.makedirs(self.config.full_path, exist_ok=True)
 
@@ -167,26 +173,18 @@ class Validator(ValidatorBase):
                 "validation/miner_secrets.json. Please ensure it exists"
             )
 
-        # Initialize Bittensor wallet objects FIRST (needed for SlackNotifier)
-        # Wallet holds cryptographic information, ensuring secure transactions and communication.
-
-        # Initialize Bittensor miner objects
-        # These classes are vital to interact and function within the Bittensor network.
+        # Wallet is initialized first (needed for SlackNotifier below).
         logger.info("Setting up bittensor objects.")
-
-        # Wallet holds cryptographic information, ensuring secure transactions and communication.
         logger.info("Initializing validator wallet...")
         wallet_start_time = time.time()
-        self.wallet = bt.Wallet(name=self.config.wallet.name, hotkey=self.config.wallet.hotkey,
-                                 path=self.config.wallet.path)
+        self.wallet = bt.Wallet(name=self.config.wallet.name, hotkey=self.config.wallet.hotkey, path=self.config.wallet.path)
         wallet_elapsed_s = time.time() - wallet_start_time
         logger.info(f"Validator wallet initialized in {wallet_elapsed_s:.2f}s")
 
-        # Determine if this validator is the mothership using centralized utility
         self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, not self.is_mainnet)
         logger.info(f"Is mothership validator: {self.is_mothership}")
 
-        # Auto-sync disabled for mothership (it's the source of truth)
+        # Auto-sync disabled for mothership
         self.auto_sync = getattr(self.config, 'autosync', False) and not self.is_mothership
 
         logger.info(
@@ -194,11 +192,9 @@ class Validator(ValidatorBase):
             f"on network: {self.config.subtensor.chain_endpoint} with config:"
         )
 
-        # This logs the active configuration to the specified logging directory for review.
         logger.info(self.config)
 
-        # Initialize Slack notifier for error reporting
-        # Created before LivePriceFetcher so it can be passed for crash notifications
+        # Created early so it can be passed for crash notifications.
         self.slack_notifier = SlackNotifier(
             hotkey=self.wallet.hotkey.ss58_address,
             webhook_url=getattr(self.config, 'slack_webhook_url', None),
@@ -206,19 +202,14 @@ class Validator(ValidatorBase):
             is_miner=False  # This is a validator
         )
 
-        # Initialize ShutdownCoordinator singleton for graceful shutdown coordination
-        # Uses shared memory for cross-process communication (no RPC needed)
-        # This must be initialized before any RPC servers are created
-        # Fresh segment (unlink any stale one, never reset it in place): a stale segment is still
-        # mapped by orphans of a killed previous run, and a reset would revive them.
+        # Must run before any RPC servers are created. Fresh segment (unlink any stale one,
+        # never reset it in place): a stale segment is still mapped by orphans of a killed
+        # previous run, and a reset would revive them.
         ShutdownCoordinator.initialize_fresh()
         logger.info("[INIT] ShutdownCoordinator initialized (shared memory)")
 
         logger.info(f"Wallet: {self.wallet}")
 
-        # ============================================================================
-        # SERVER ORCHESTRATOR - Centralized server lifecycle management
-        # ============================================================================
         context = NeuronContext(
             slack_notifier=self.slack_notifier,
             config=self.config,
@@ -309,7 +300,6 @@ class Validator(ValidatorBase):
                 'entity_collateral'
             ])
             logger.info("[INIT] All daemons started, caches warmed")
-        # ============================================================================
 
         # Position sync runs in core/monolith, not the orders app.
         if self.orders_app:
@@ -327,7 +317,6 @@ class Validator(ValidatorBase):
             miner_account_client=self.miner_account_client,
         )
 
-        # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
 
         # HL tracker is co-resident with the axon (monolith or orders app), never in a core-split
@@ -382,50 +371,34 @@ class Validator(ValidatorBase):
         if self.subtensor_ops_manager is not None:
             self.subtensor = self.subtensor_ops_manager.get_subtensor()
 
-        # Build and link vali functions to the axon.
-        # The axon handles request processing, allowing validators to send this process requests.
-        # ValidatorBase creates its own clients internally (forward compatibility):
-        # - AssetSelectionClient, ContractClient
-        super().__init__(wallet=self.wallet, slack_notifier=self.slack_notifier, config=self.config,
-                         metagraph_client=self.metagraph_client,
-                         asset_selection_client=self.asset_selection_client, subtensor=self.subtensor)
-
-        # Rate limiters for incoming requests
+        # Rate limiters for incoming requests. Must be set before wire_http_server() below: that
+        # call starts the signed-request HTTP server and wires should_reject_synapse's handlers
+        # (_receive_signal_sync et al.) live immediately, so a request can land before this
+        # constructor returns.
         self.order_rate_limiter = RateLimiter()
         self.position_inspector_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 4)
 
-        # spawn_api gates only in-core spawning; config.serve stays on because it also gates the
-        # position-update broadcasts (market_order_manager.py) that feed the extracted WS server.
-        # Under run.sh's split (--no-spawn-api), REST/WS run as their own PM2 apps — spawning here
-        # too would double-bind 48888/8765/50014/50022. Defaults to spawning (backward-safe).
-        if self.config.serve and getattr(self.config, 'spawn_api', True) and not self.orders_app:
-            # Create API Manager with configuration options
-            self.api_manager = ValidatorAPIManager(
-                slack_webhook_url=getattr(self.config, 'slack_webhook_url', None),
-                validator_hotkey=self.wallet.hotkey.ss58_address,
-                api_host=getattr(self.config, 'api_host', '0.0.0.0'),
-                api_rest_port=getattr(self.config, 'api_rest_port', 48888),
-                api_ws_port=getattr(self.config, 'api_ws_port', 8765),
-                is_mainnet=self.is_mainnet
-            )
+        # Own ContractClient for receiving account openings (StandardMinerOpening route).
+        self._contract_client = ContractClient(running_unit_tests=False)
 
-            # Start the API Manager in a separate thread. Handle seperately from other RPCServers as Flask was giving issues.
-            self.api_thread = threading.Thread(target=self.api_manager.run, daemon=True)
-            self.api_thread.start()
-            # Verify thread started
-            time.sleep(0.1)
-            if not self.api_thread.is_alive():
-                raise RuntimeError("API thread failed to start")
-            logger.info(
-                f"API services thread started - REST: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_rest_port', 48888)}, "
-                f"WebSocket: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_ws_port', 8765)}")
+        # Dedicated thread pool for concurrent synchronous signed-request handlers.
+        self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+
+        # Build and link vali functions to the signed-request HTTP server (replaces bt.Axon).
+        self.http_server = None
+        # --no-axon (serve_axon=False): this process does not serve the signed-request HTTP server —
+        # the vanta-orders app does. Core-split runs with serve_axon=False; the default monolith and
+        # vanta-orders run with serve_axon=True. The orders app ALWAYS serves it (that is its whole
+        # job), even if --no-axon leaked into its args. self.http_server stays None otherwise so
+        # guards can check it. (Flag name kept as --no-axon/serve_axon for operator continuity even
+        # though this no longer wires up a bt.Axon — see shared_objects/http_server/.)
+        if getattr(self.config, 'serve_axon', True) or self.orders_app:
+            self.wire_http_server()
         else:
-            self.api_thread = None
-            if self.config.serve:
-                logger.info("API services not spawned by core (--no-spawn-api): "
-                            "REST/WS run as separate PM2 apps (vanta-rest / vanta-ws)")
-            else:
-                logger.info("API services not enabled - skipping")
+            logger.info("[INIT] --no-axon: signed-request HTTP server not served here (runs in vanta-orders app)")
+
+        my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
+        logger.info(f"Running validator on uid: {my_subnet_uid}")
 
         logger.info("[INIT] All initialization steps completed successfully!")
 
@@ -439,9 +412,8 @@ class Validator(ValidatorBase):
                 level="info"
             )
 
-        # Validators on mainnet net to be syned for the first time or after interruption need to resync their
-        # positions. Assert there are existing orders that occurred > 24hrs in the past. Assert that the newest order
-        # was placed within 24 hours.
+        # Validators on mainnet syncing for the first time or after interruption need to resync
+        # their positions if the newest order on disk isn't within the last 24 hours.
         # orders app doesn't sync (position_syncer is None).
         if self.is_mainnet and not self.orders_app:
             n_positions_on_disk = self.position_manager_client.get_number_of_miners_with_any_positions()
@@ -470,6 +442,80 @@ class Validator(ValidatorBase):
                     False, candidate_data=self.position_syncer.read_validator_checkpoint_from_gcloud_zip())
 
 
+    def wire_http_server(self):
+        """Builds and starts the signed-request FastAPI server, replacing bt.Axon.
+
+        Authentication (signature verification, dual-scheme: new btauth/1 + legacy
+        bittensor v10 bridge) runs as middleware (shared_objects/http_server/app.py);
+        authorization (registered-hotkey check, this subnet's blacklist_fn-equivalent)
+        runs per-route via shared_objects/http_server/routes.py's register_handler.
+        """
+        http_port = self.config.http_port
+        logger.info(f"setting http port [{http_port}]")
+
+        verifier = AuthVerifier(
+            self_hotkey_ss58=self.wallet.hotkey.ss58_address,
+            initial_hotkeys=self.metagraph_client.get_hotkeys(),
+        )
+        app = build_app(verifier, vanta_protocol.LEGACY_HASH_FIELDS)
+
+        # Each business_fn already has the (request, caller_hotkey) -> response shape
+        # register_handler expects — no internal model, no request/response conversion.
+        route_business_fns = {
+            "SendSignal": self._receive_signal_sync,
+            "GetPositions": self._get_positions,
+            "CollateralRecord": self.miner_account_client.receive_collateral_record,
+            "AssetSelection": self.asset_selection_client.receive_asset_selection,
+            "SubaccountRegistration": self.entity_client.receive_subaccount_registration,
+            "EntityEndpointUpdate": self.entity_client.receive_entity_endpoint_update,
+            "StandardMinerOpening": self._contract_client.receive_standard_miner_opening,
+            "StandardMinerRecord": self.miner_account_client.receive_standard_miner_record,
+            "AccountSizeLocks": self.miner_account_client.receive_size_locks,
+        }
+        for message_name, business_fn in route_business_fns.items():
+            request_model, response_model = vanta_protocol.MESSAGE_TYPES[message_name]
+            register_handler(
+                app, message_name, request_model, response_model,
+                business_fn, self._thread_pool, self.is_caller_authorized,
+            )
+
+        self.http_server = HttpServer(app, host=self.config.http_host, port=http_port)
+        self.http_server.start()
+        logger.info(f"Started signed-request HTTP server on {self.config.http_host}:{http_port}")
+
+        self.auth_verifier = verifier
+        self._start_trusted_hotkey_refresh_loop()
+
+        # Publish our IP:port on chain so other nodes can discover this server via the metagraph's
+        # per-neuron axon field (replaces axon.serve()). Use subtensor lock to prevent WebSocket
+        # concurrency errors with the metagraph_updater thread.
+        public_ip = get_external_ip()
+        logger.info(f"Publishing ServeAxon on network {self.config.subtensor.network} "
+                    f"netuid {self.config.netuid}: {public_ip}:{http_port}")
+        with get_subtensor_lock():
+            result = self.subtensor.execute(
+                bt.ServeAxon(netuid=self.config.netuid, ip=public_ip, port=http_port),
+                self.wallet,
+            )
+        if not result.success:
+            logger.error(f"ServeAxon failed: {result.error}")
+
+    def _start_trusted_hotkey_refresh_loop(self, interval_s: float = 30.0):
+        """bittensor.http_auth.configure_verifier's trusted_sender_schemes mapping is
+        process-local, so each process that runs an HttpServer (core monolith or the
+        vanta-orders split) must periodically re-sync it against the metagraph itself —
+        a newly-registered hotkey otherwise can't be verified until this refreshes."""
+
+        def _loop():
+            while True:
+                time.sleep(interval_s)
+                try:
+                    self.auth_verifier.refresh_trusted_hotkeys(self.metagraph_client.get_hotkeys())
+                except Exception as e:
+                    logger.warning(f"[http_server] failed to refresh trusted hotkeys: {e}")
+
+        threading.Thread(target=_loop, daemon=True, name="auth-trusted-hotkey-refresh").start()
+
     def check_shutdown(self):
         if not is_shutdown():
             return
@@ -486,16 +532,13 @@ class Validator(ValidatorBase):
         # bt.Axon is gone (replaced by the signed-request HTTP server in shared_objects/http_server/,
         # already-done prior migration) - self.axon was never set, this was dead/broken code left
         # over from the old axon lifecycle.
-        # SubtensorOpsServer and all RPC servers shut down automatically via ShutdownCoordinator:
-        if self.api_thread:
-            logger.warning("Stopping API manager...")
-            self.api_thread.join()
+        # SubtensorOpsServer and all RPC servers shut down automatically via ShutdownCoordinator.
+        # REST/WS run as separate PM2 apps (vanta-rest / vanta-ws) with their own shutdown handling.
         signal.alarm(0)
         print("Graceful shutdown completed")
         sys.exit(0)
 
     def main(self):
-        # Keep the vali alive. This loop maintains the vali's operations until intentionally stopped.
         logger.info("Starting main loop")
 
         # Send startup notification to Slack
@@ -519,7 +562,6 @@ class Validator(ValidatorBase):
                     self.position_syncer.sync_positions_with_cooldown(self.auto_sync)
                     # All managers now run in their own daemon processes
 
-            # In case of unforeseen errors, the validator will log the error and send notification to Slack
             except Exception as e:
                 error_traceback = traceback.format_exc()
                 logger.error(error_traceback)
@@ -605,12 +647,13 @@ class Validator(ValidatorBase):
 
     @timeme
     def is_caller_authorized(self, caller_hotkey: str) -> None:
-        """Overrides ValidatorBase.is_caller_authorized with a fast local set lookup —
-        subtensor_ops_manager's in-process cache in the monolith/core, or the metagraph-fed
-        cache in the orders app — instead of the base implementation's per-request RPC call
-        to MetagraphClient.has_hotkey(). Every signed-request route (shared_objects/http_server)
-        pays this check once, so avoiding an RPC round-trip here matters under concurrent
-        order load. Raises shared_objects.http_auth.Forbidden if unregistered."""
+        """Registered-hotkey authorization check used by every signed-request route
+        (replaces bt.Axon's blacklist_fn): a fast local set lookup — subtensor_ops_manager's
+        in-process cache in the monolith/core, or the metagraph-fed cache in the orders app —
+        instead of a per-request RPC call to MetagraphClient.has_hotkey(). Every signed-request
+        route (shared_objects/http_server) pays this check once, so avoiding an RPC round-trip
+        here matters under concurrent order load. Raises shared_objects.http_auth.Forbidden if
+        unregistered."""
         if self.subtensor_ops_manager is not None:
             is_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(caller_hotkey)
         else:
@@ -625,9 +668,7 @@ class Validator(ValidatorBase):
         logger.debug(f"Not rejecting registered hotkey {caller_hotkey}")
 
 
-    # This is the core validator function to receive a signal
     def _receive_signal_sync(self, request: SendSignalRequest, caller_hotkey: str) -> SendSignalResponse:
-        # pull miner hotkey to reference in various activities
         now_ms = TimeUtil.now_in_millis()
         order = None
         miner_hotkey = caller_hotkey
@@ -650,10 +691,9 @@ class Validator(ValidatorBase):
             response.should_retry = False
             return response
 
-        # For entity miners: construct synthetic hotkey if subaccount_id provided
+        # Entity miners: downstream ops use the synthetic hotkey when a subaccount is given.
         if subaccount_id is not None:
-            synthetic_hotkey = f"{miner_hotkey}_{subaccount_id}"
-            miner_hotkey = synthetic_hotkey  # Use synthetic hotkey for all downstream ops
+            miner_hotkey = f"{miner_hotkey}_{subaccount_id}"
 
         logger.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
 
@@ -826,7 +866,6 @@ class Validator(ValidatorBase):
         logger.info(msg)
         return response
 
-# This is the main function, which runs the miner.
 if __name__ == "__main__":
     validator = Validator()
     validator.main()
