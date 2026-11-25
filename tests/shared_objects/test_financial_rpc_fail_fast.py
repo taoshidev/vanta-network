@@ -68,7 +68,7 @@ class TestFinancialRpcFailFast(unittest.TestCase):
         c._invoke_rpc.assert_called_once()
         call = c._invoke_rpc.call_args
         self.assertEqual(call.args[0], "register_entity_rpc")
-        self.assertEqual(call.kwargs["args"], ("eh",))
+        self.assertEqual(call.kwargs["args"], ("eh", "entity_miner", None))
         self.assertNotIn("retry", call.kwargs)
         self.assertEqual(call.kwargs["timeout_s"], ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 

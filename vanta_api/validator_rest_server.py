@@ -75,6 +75,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
+from vali_objects.enums.entity_role_enum import EntityRole
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.fee_event import FeeType
 from vali_objects.vali_dataclasses.order import Order
@@ -2643,7 +2644,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     def register_entity(self):
         """
-        Register a new entity.
+        Register a new entity, or add a role to a registered entity. Each role costs its own
+        registration fee, slashed from the entity's collateral.
 
         Example:
         curl -X POST http://localhost:48888/entity/register \\
@@ -2651,9 +2653,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           -d '{
             "entity_hotkey": "5GhDr...",
             "entity_coldkey": "5FxY...",
-            "max_subaccounts": 500,
+            "role": "permissionless_entity_miner",
+            "pem_take": 0.1,
             "signature": "0x..."
           }'
+
+        role is an EntityRole value and defaults to entity_miner when omitted. pem_take, the profit
+        share of a permissionless entity miner (at least ValiConfig.PEM_MIN_TAKE, below 1), is required
+        for that role and refused for entity_miner. The signature is the coldkey's over the sorted JSON of
+        entity_coldkey, entity_hotkey, and role and pem_take when the request carries them.
         """
         # Check if entity client is available
         if not self._entity_client:
@@ -2686,13 +2694,31 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             entity_coldkey = data['entity_coldkey']
             entity_hotkey = data['entity_hotkey']
+            role = data.get('role', EntityRole.ENTITY_MINER.value)
+            pem_take = data.get('pem_take')
 
-            # Verify signature
-            keypair = Keypair(ss58_address=entity_coldkey)
-            message = json.dumps({
+            if not EntityRole.is_valid(role):
+                return jsonify({'error': f'role must be one of {[r.value for r in EntityRole]}'}), 400
+            if role == EntityRole.PERMISSIONLESS_ENTITY_MINER.value:
+                if pem_take is None:
+                    return jsonify({'error': f'pem_take is required for the {role} role'}), 400
+                if isinstance(pem_take, bool) or not isinstance(pem_take, (int, float)):
+                    return jsonify({'error': 'pem_take must be a number'}), 400
+            elif pem_take is not None:
+                return jsonify({'error': f'pem_take only applies to the {EntityRole.PERMISSIONLESS_ENTITY_MINER.value} role'}), 400
+
+            # Verify signature. role and pem_take are signed only when sent, so a request without them
+            # verifies against the same message as before roles existed
+            signed_fields = {
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey
-            }, sort_keys=True).encode('utf-8')
+            }
+            if 'role' in data:
+                signed_fields['role'] = role
+            if 'pem_take' in data:
+                signed_fields['pem_take'] = pem_take
+            keypair = Keypair(ss58_address=entity_coldkey)
+            message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
             if not is_valid:
@@ -2705,14 +2731,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Register entity via RPC
             success, message = self._entity_client.register_entity(
-                entity_hotkey=entity_hotkey
+                entity_hotkey=entity_hotkey,
+                role=role,
+                pem_take=pem_take
             )
 
             if success:
                 return jsonify({
                     'status': 'success',
                     'message': message,
-                    'entity_hotkey': entity_hotkey
+                    'entity_hotkey': entity_hotkey,
+                    'role': role
                 }), 200
             else:
                 return jsonify({'error': message}), 400

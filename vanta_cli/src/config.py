@@ -1,6 +1,6 @@
 """Configuration module with project constants."""
 
-VANTA_CLI_VERSION = "3.2.0"
+VANTA_CLI_VERSION = "3.3.0"
 
 # Vanta API configuration
 VANTA_API_BASE_URL_TESTNET = "https://validator.testnet.vantatrading.io"

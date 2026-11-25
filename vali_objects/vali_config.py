@@ -873,7 +873,9 @@ class ValiConfig:
     SLASH_BURN_PROPORTION = 1.0  # Share of slashed theta that is burned
 
     # Entity Miner Collateral
-    ENTITY_REGISTRATION_FEE = 1000  # Theta required to register an entity
+    ENTITY_REGISTRATION_FEE = 1000  # Theta required to register an entity (the entity_miner role)
+    PERMISSIONLESS_ENTITY_MINER_REGISTRATION_FEE = 1000  # Theta required to add the permissionless_entity_miner role
+    PEM_MIN_TAKE = 0.10  # Smallest profit share a permissionless entity miner may set at registration
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
     # Largest pro account size in USD. There is no network default: the entity picks the size when it
     # promotes onto the pro track (POST /entity/subaccount/promote), and the network enforces only that

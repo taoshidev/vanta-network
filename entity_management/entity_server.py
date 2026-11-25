@@ -11,6 +11,7 @@ Follows the same pattern as ChallengePeriodServer.
 from typing import Optional, Tuple, Dict, List
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.entity_role_enum import EntityRole
 
 import template.protocol
 from entity_management.entity_manager import EntityManager
@@ -134,18 +135,22 @@ class EntityServer(RPCServerBase):
 
     def register_entity_rpc(
         self,
-        entity_hotkey: str
+        entity_hotkey: str,
+        role: str = EntityRole.ENTITY_MINER.value,
+        pem_take: Optional[float] = None
     ) -> Tuple[bool, str]:
         """
-        Register a new entity.
+        Register a new entity, or add a role to a registered one.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
+            role: EntityRole value to register
+            pem_take: Profit share, required for the permissionless_entity_miner role
 
         Returns:
             (success: bool, message: str)
         """
-        return self._manager.register_entity(entity_hotkey)
+        return self._manager.register_entity(entity_hotkey, role=role, pem_take=pem_take)
 
     def create_subaccount_rpc(
         self,
@@ -380,6 +385,10 @@ class EntityServer(RPCServerBase):
             (found: bool, status: Optional[str], synthetic_hotkey: str)
         """
         return self._manager.get_subaccount_status(synthetic_hotkey)
+
+    def is_permissionless_entity_miner_rpc(self, hotkey: str) -> bool:
+        """True if `hotkey` is a registered entity with the permissionless_entity_miner role."""
+        return self._manager.is_permissionless_entity_miner(hotkey)
 
     def get_entity_data_rpc(self, entity_hotkey: str) -> Optional[dict]:
         """
