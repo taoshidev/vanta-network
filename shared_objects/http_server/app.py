@@ -1,13 +1,8 @@
 """FastAPI app factory for the miner<->validator / validator<->validator signed-request
-server, replacing bittensor v10's bt.Axon (which was itself a Starlette app under the
-hood — this is the same ASGI stack, just owned directly instead of hidden behind bt.Axon).
-
-Authentication (dual-scheme signature verification) runs as Starlette middleware, mirroring
-bittensor v10's AxonMiddleware.dispatch(preprocess -> verify) sequencing, so it rejects an
-unauthenticated caller before any route handler or registered-hotkey check runs.
-Authorization (is this verified hotkey welcome here) stays a separate per-route concern
-via the `caller_hotkey` dependency below plus shared_objects.http_auth.require_registered_hotkey
-— this replaces bt.Axon's per-route blacklist_fn.
+server. Authentication (dual-scheme signature verification) runs as Starlette middleware,
+rejecting an unauthenticated caller before any route handler runs. Authorization (is this
+verified hotkey welcome here) is a separate per-route concern via the `caller_hotkey`
+dependency plus shared_objects.http_auth.require_registered_hotkey.
 """
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -30,9 +25,8 @@ class BtAuthMiddleware(BaseHTTPMiddleware):
         message_name = request.url.path.lstrip("/")
 
         # ASGI's `path` is percent-decoded; signatures cover the wire (percent-encoded)
-        # form, so rebuild it from raw_path + query_string per SIGNED-REQUESTS.md's
-        # FastAPI recipe. Our routes are fixed ASCII paths with no query string in
-        # practice, but this keeps the verifier's path check byte-exact regardless.
+        # form, so rebuild it from raw_path + query_string to keep the verifier's path
+        # check byte-exact.
         target = request.scope["raw_path"].decode()
         if request.scope["query_string"]:
             target += "?" + request.scope["query_string"].decode()

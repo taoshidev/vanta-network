@@ -1,21 +1,11 @@
-"""httpx-based replacement for bittensor v10's bt.Dendrite.
+"""httpx-based signed-request client. `aquery` fans out to every target concurrently via
+asyncio.gather — the multi-validator fire-and-forget broadcast relies on this not being
+sequential. Target objects just need `.ip`, `.port`, `.hotkey` (the SimpleAxonInfo shape
+MetagraphClient returns).
 
-Replaces call sites that did `bt.Dendrite(wallet=...).aquery([...], synapse)` —
-miner_objects/prop_net_order_placer.py, miner_objects/position_inspector.py,
-vali_objects/data_sync/p2p_syncer.py, shared_objects/subtensor_ops/subtensor_ops.py
-(validator broadcast). Fans out to every target CONCURRENTLY via asyncio.gather in one
-`aquery` call, matching v10 Dendrite.aquery's internal concurrent fan-out (the multi-
-validator fire-and-forget broadcast relies on this not being sequential).
-
-Target objects just need `.ip`, `.port`, `.hotkey` attributes — the same SimpleAxonInfo
-shape MetagraphClient already returns, so target-discovery call sites need no changes.
-
-Performance note: this constructs a fresh httpx.AsyncClient per HttpAuthClient instance.
-Call sites that build-and-discard one per request today (matching v10's own
-`bt.Dendrite(wallet=...)` ... `aclose_session()` pattern, so not a regression) forgo
-connection pooling; a call site that's latency-sensitive and issues many sequential
-requests to the same targets (e.g. the mothership path) should hold one HttpAuthClient
-for its lifetime instead, to reuse connections.
+Constructs a fresh httpx.AsyncClient per instance, so a latency-sensitive call site
+issuing many sequential requests to the same targets should hold one HttpAuthClient for
+its lifetime to reuse connections, rather than building one per request.
 """
 import asyncio
 from typing import Optional, Type
@@ -80,8 +70,7 @@ class HttpAuthClient:
     ) -> list[BaseModel]:
         """Sends `body` to every target concurrently; returns one response_model per
         target, in the same order as `targets` (zip them together at the call site to
-        know which target a given response came from — httpx responses carry no
-        axon-identifying info the way a v10 Dendrite response's `.axon` did)."""
+        know which target a given response came from)."""
         payload = body.model_dump_json().encode()
         return await asyncio.gather(*[
             self._post_one(target, request_name, payload, response_model, timeout)

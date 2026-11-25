@@ -138,11 +138,8 @@ class Validator:
                     f"environment: {_config_overrides}. Unset them before running on mainnet."
                 )
 
-        # Migrations + tmp clear mutate on-disk state, which the client-only orders app does not
-        # own. Under --split-state, MIGRATIONS belong to vanta-state (run_state_server.py): it
-        # starts first and its servers load the migrated files — core migrating afterwards would
-        # rewrite files underneath the live state tier, whose next save would silently undo the
-        # migration (while migrations_completed.txt marks it done).
+        # Migrations + tmp clear mutate on-disk state; under --split-state that belongs to
+        # vanta-state, which runs them itself before core can race it.
         if not self.orders_app and not self.split_state:
             print("Checking for pending migrations...")
             if not run_migrations():
@@ -152,10 +149,8 @@ class Validator:
         if not self.orders_app:
             ValiBkpUtils.clear_tmp_dir()
 
-        # OrderUuidDedupClient is server-authoritative (survives a restart, holds across instances);
-        # UUIDTracker is process-local. The handler claims a uuid BEFORE applying (check_and_add) and
-        # releases on failure — this serializes concurrent same-uuid orders (32-worker executor),
-        # which the old add-after-success left able to both apply.
+        # OrderUuidDedupClient is server-authoritative (survives restarts); UUIDTracker is
+        # process-local only.
         self.uuid_tracker = OrderUuidDedupClient() if self.orders_app else UUIDTracker()
 
         # When split, the order side (vanta-orders) and sync side (core) coordinate through
@@ -198,12 +193,10 @@ class Validator:
             hotkey=self.wallet.hotkey.ss58_address,
             webhook_url=getattr(self.config, 'slack_webhook_url', None),
             error_webhook_url=getattr(self.config, 'slack_error_webhook_url', None),
-            is_miner=False  # This is a validator
+            is_miner=False
         )
 
-        # Must run before any RPC servers are created. Fresh segment (unlink any stale one,
-        # never reset it in place): a stale segment is still mapped by orphans of a killed
-        # previous run, and a reset would revive them.
+        # Must run before any RPC servers are created.
         ShutdownCoordinator.initialize_fresh()
         logger.info("[INIT] ShutdownCoordinator initialized (shared memory)")
 
@@ -259,7 +252,7 @@ class Validator:
         else:
             subtensor_ops_server = orchestrator.get_server('subtensor_ops')
             self.subtensor = subtensor_ops_server.get_subtensor()
-            self.subtensor_ops_manager = subtensor_ops_server.manager  # For blacklist_fn
+            self.subtensor_ops_manager = subtensor_ops_server.manager
 
         if self.orders_app:
             logger.info("[INIT] --orders-app: no server daemons / pre_run_setup (client of state tiers)")
@@ -279,7 +272,6 @@ class Validator:
             ])
             logger.info("[INIT] Core-tier daemons started (state daemons run in vanta-state)")
         else:
-            # Single-process: core hosts everything (today's behavior).
             # Pre-run setup disabled on main (#879) - re-enable if needed
             # orchestrator.call_pre_run_setup(perform_order_corrections=True)
             time.sleep(1)  # Stagger for servers to finish initailizing
@@ -300,7 +292,6 @@ class Validator:
             ])
             logger.info("[INIT] All daemons started, caches warmed")
 
-        # Position sync runs in core/monolith, not the orders app.
         if self.orders_app:
             self.position_syncer = None
         else:
@@ -370,20 +361,15 @@ class Validator:
         if self.subtensor_ops_manager is not None:
             self.subtensor = self.subtensor_ops_manager.get_subtensor()
 
-        # Rate limiters for incoming requests. Must be set before wire_http_server() below: that
-        # call starts the signed-request HTTP server and wires should_reject_synapse's handlers
-        # (_receive_signal_sync et al.) live immediately, so a request can land before this
-        # constructor returns.
+        # Must be set before wire_http_server() below: it starts handling requests immediately.
         self.order_rate_limiter = RateLimiter()
         self.position_inspector_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 4)
 
         # Own ContractClient for receiving account openings (StandardMinerOpening route).
         self._contract_client = ContractClient(running_unit_tests=False)
 
-        # Dedicated thread pool for concurrent synchronous signed-request handlers.
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 
-        # Build and link vali functions to the signed-request HTTP server (replaces bt.Axon).
         self.http_server = None
         # --no-axon (serve_axon=False): this process does not serve the signed-request HTTP server —
         # the vanta-orders app does. Core-split runs with serve_axon=False; the default monolith and
@@ -401,7 +387,6 @@ class Validator:
 
         logger.info("[INIT] All initialization steps completed successfully!")
 
-        # Send success notification to Slack
         if self.slack_notifier:
             self.slack_notifier.send_message(
                 f"✅ Validator Initialization Complete!\n"
@@ -416,7 +401,6 @@ class Validator:
         # orders app doesn't sync (position_syncer is None).
         if self.is_mainnet and not self.orders_app:
             n_positions_on_disk = self.position_manager_client.get_number_of_miners_with_any_positions()
-            # Get extreme timestamps from all positions using client
             oldest_disk_ms, youngest_disk_ms = float("inf"), 0
             all_positions = self.position_manager_client.get_positions_for_all_miners()
             for hotkey, positions in all_positions.items():
@@ -425,7 +409,7 @@ class Validator:
                         oldest_disk_ms = min(oldest_disk_ms, o.processed_ms)
                         youngest_disk_ms = max(youngest_disk_ms, o.processed_ms)
             if oldest_disk_ms == float("inf"):
-                oldest_disk_ms = 0  # No positions found
+                oldest_disk_ms = 0
             if (n_positions_on_disk > 0):
                 logger.info(f"Found {n_positions_on_disk} hotkeys with positions on disk."
                                 f" Found oldest_disk_ms: {TimeUtil.millis_to_datetime(oldest_disk_ms)},"

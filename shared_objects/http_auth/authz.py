@@ -3,9 +3,7 @@
 Authentication (AuthVerifier) answers "who signed this." Authorization answers "is that
 hotkey welcome here." Per CLAUDE.md, this subnet's policy ignores validator_permit/trust
 (under Null consensus one UID holds the permit) and instead checks registration via
-stake weight through the existing MetagraphClient — this replaces the old bt.Axon
-`blacklist_fn` (neurons/validator_base.py's blacklist_fn, which checked
-`metagraph.has_hotkey(synapse.dendrite.hotkey)`).
+stake weight through the existing MetagraphClient.
 """
 from shared_objects.http_auth.exceptions import AuthError
 

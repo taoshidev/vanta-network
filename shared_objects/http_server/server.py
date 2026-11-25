@@ -1,9 +1,4 @@
-"""Owns the uvicorn.Server lifecycle for the signed-request FastAPI app.
-
-Mirrors the start()/stop() shape of bittensor v10's bt.Axon so neurons/validator.py's
-process-split call sites (--no-axon / --orders-app, see Validator.wire_http_server())
-need minimal changes beyond constructing an HttpServer instead of a bt.Axon.
-"""
+"""Owns the uvicorn.Server lifecycle for the signed-request FastAPI app."""
 import threading
 
 import uvicorn

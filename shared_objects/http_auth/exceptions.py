@@ -1,9 +1,5 @@
-"""Auth errors for both the btauth/1 path and the legacy v10 compat path.
-
-Mirrors bittensor.http_auth's AuthError hierarchy (MalformedAuth/WrongReceiver/
-StaleRequest/ReplayedRequest/BadSignature) so callers can catch one AuthError type
-regardless of which scheme rejected the request.
-"""
+"""Auth errors for both the btauth/1 path and the legacy v10 compat path, so callers can
+catch one AuthError type regardless of which scheme rejected the request."""
 
 
 class AuthError(Exception):

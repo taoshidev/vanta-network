@@ -1,20 +1,14 @@
 """Generic route registration so adding a new signed-request endpoint is one call.
 
-Each route: authorize (registered-hotkey check, replacing bt.Axon's blacklist_fn) ->
-offload the actual handler onto the shared thread pool (replacing the
-`loop.run_in_executor(self._thread_pool, ...)` pattern every handler in
-neurons/validator_base.py already used) -> return the response model.
+Each route: authorize (registered-hotkey check) -> offload the handler onto the shared
+thread pool -> return the response model.
 
 `authz_check` is a plain `Callable[[str], None]` (raise to reject) rather than a hardcoded
-`metagraph_client.has_hotkey(...)` RPC call: the old bt.Axon-era `blacklist_fn` on the
-`Validator` subclass (neurons/validator.py) answered this from an in-process cache
-(subtensor_ops_manager's registered-hotkey set, or a background-refreshed local set in
-the orders-app split) specifically to avoid an RPC round-trip on every single signed
-request — a real latency difference under concurrent order load, not a cosmetic one.
-Callers should pass that fast check in where available (see
-neurons/validator_base.py::wire_http_server, which defaults to
-shared_objects.http_auth.require_registered_hotkey — an RPC call — only when no faster
-check is provided)."""
+RPC call, since an in-process cache (e.g. subtensor_ops_manager's registered-hotkey set)
+avoids an RPC round-trip on every signed request — a real latency difference under
+concurrent order load. Callers should pass that fast check in where available (see
+neurons/validator_base.py::wire_http_server, which defaults to the slower
+shared_objects.http_auth.require_registered_hotkey only when no faster check is given)."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Type

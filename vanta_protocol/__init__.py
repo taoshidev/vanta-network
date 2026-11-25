@@ -1,8 +1,5 @@
 """vanta_protocol — wire message types for miner<->validator and validator<->validator
-traffic, replacing the old template/protocol.py (bittensor-scaffolding naming, vestigial
-now that bt.Synapse/Axon/Dendrite are gone — see shared_objects/http_server,
-shared_objects/http_client, shared_objects/http_auth for the transport they ride on).
-"""
+traffic (transport lives in shared_objects/http_server, http_client, http_auth)."""
 from vanta_protocol.base import Ack
 from vanta_protocol.broadcast import (
     BroadcastRequest,
@@ -15,10 +12,8 @@ from vanta_protocol.signals import (
     SendSignalResponse,
 )
 
-# name -> (request model, response model), used by shared_objects/http_server and
-# shared_objects/http_client to generically wire up routes, and to generically dispatch
-# the validator<->validator broadcast types (vali_objects/validator_broadcast_base.py,
-# shared_objects/subtensor_ops/subtensor_ops.py's do_broadcast()).
+# name -> (request model, response model), used to generically wire up routes and
+# dispatch broadcasts (vali_objects/validator_broadcast_base.py).
 MESSAGE_TYPES: dict = {
     "SendSignal": (SendSignalRequest, SendSignalResponse),
     "GetPositions": (GetPositionsRequest, GetPositionsResponse),
@@ -31,18 +26,9 @@ MESSAGE_TYPES: dict = {
     "AccountSizeLocks": (BroadcastRequest, BroadcastResponse),
 }
 
-# name -> the fields a legacy bittensor v10 Dendrite hashed into computed_body_hash for
-# that message type (SHA3-256 over the concatenation of SHA3-256(str(field_value)) for
-# each field, in this order) — a historical fact about the OLD wire format, independent
-# of the Request/Response models above. Used only by shared_objects/http_auth/legacy_v10.py
-# during the backward-compatibility transition window.
-#
-# The validator<->validator broadcast types (CollateralRecord, AssetSelection,
-# SubaccountRegistration, EntityEndpointUpdate, StandardMinerOpening, StandardMinerRecord,
-# AccountSizeLocks) are deliberately absent: they now share BroadcastRequest's generic
-# `payload` field, which no longer matches the old per-type field name a v10 peer hashed,
-# so legacy verification can't work for them regardless. This is fine only because every
-# validator is assumed to upgrade together — see MIGRATION-GUIDE.md.
+# name -> fields a legacy bittensor v10 Dendrite hashed into computed_body_hash, used only
+# by shared_objects/http_auth/legacy_v10.py. Broadcast types are absent: they share
+# BroadcastRequest's generic `payload` field, which a v10 peer never hashed.
 LEGACY_HASH_FIELDS: dict = {
     "SendSignal": ("signal",),
     "GetPositions": ("positions",),

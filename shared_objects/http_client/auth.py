@@ -1,10 +1,6 @@
-"""httpx.Auth adapter around bittensor.http_auth.sign — signs each request as it is sent.
-
-Per SIGNED-REQUESTS.md: "Clients sign a fresh nonce for every attempt, including retries
-of an identical body." Because httpx calls auth_flow once per actual send, a fresh
-HttpAuthClient.aquery() call (or any new httpx request through this Auth) naturally gets
-a fresh nonce — never hoist signing outside of a per-attempt request construction.
-"""
+"""httpx.Auth adapter around bittensor.http_auth.sign. httpx calls auth_flow once per
+actual send, so each attempt (including retries) naturally gets a fresh nonce — never
+hoist signing outside of a per-attempt request construction."""
 from typing import Iterator
 
 import bittensor as bt
