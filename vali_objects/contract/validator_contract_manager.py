@@ -441,10 +441,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
             # Execute the deposit through the collateral manager
             try:
-                miner_hotkey = next(
-                    arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "hotkey")
-                deposit_amount = next(
-                    arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "alpha_amount")
+                miner_hotkey = extrinsic.origin_hotkey
+                deposit_amount = extrinsic.alpha_amount
                 deposit_amount_theta = self.to_theta(deposit_amount)
 
                 # # Check collateral balance limit before processing
@@ -1359,8 +1357,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
     def _query_owner_on_chain(self, hotkey_ss58: str):
         """Blocking chain query; runs on the bounded ownership executor."""
-        subtensor_api = self.collateral_manager.subtensor_api
-        return subtensor_api.queries.query_subtensor("Owner", [hotkey_ss58])
+        return self.collateral_manager.subtensor.neurons.hotkey_owner(hotkey_ss58)
 
     def shutdown_ownership_executor(self):
         """Release the bounded ownership executor (operator/teardown hook).

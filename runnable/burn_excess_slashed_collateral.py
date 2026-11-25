@@ -112,7 +112,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # 3. Check vault stake on Subtensor
     # -----------------------------------------------------------------------
-    staked = collateral_manager.subtensor_api.staking.get_stake(
+    staked = collateral_manager.subtensor.staking.stake(
         coldkey_ss58=wallet.coldkeypub.ss58_address,
         hotkey_ss58=vault_hotkey_ss58,
         netuid=network.netuid,
@@ -152,14 +152,11 @@ def main() -> None:
     # 6. Submit the extrinsic
     # -----------------------------------------------------------------------
     print(f"Submitting burn_alpha for {burn_theta:.9f} theta ({burn_rao} rao)...")
-    collateral_manager._submit_extrinsic_with_retry(
-        create_extrinsic_fn=lambda: collateral_manager.create_burn_alpha_extrinsic(
-            amount=burn_rao,
-            hotkey_ss58=vault_hotkey_ss58,
-            vault_wallet=wallet,
-            wallet_password=wallet_password,
-        ),
-        error_message="Failed to burn alpha tokens on Subtensor",
+    collateral_manager.burn(
+        amount=burn_rao,
+        vault_stake=vault_hotkey_ss58,
+        vault_wallet=wallet,
+        wallet_password=wallet_password,
     )
 
     print()
@@ -168,7 +165,7 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # 7. Verify updated vault stake
     # -----------------------------------------------------------------------
-    staked_after = collateral_manager.subtensor_api.staking.get_stake(
+    staked_after = collateral_manager.subtensor.staking.stake(
         coldkey_ss58=wallet.coldkeypub.ss58_address,
         hotkey_ss58=vault_hotkey_ss58,
         netuid=network.netuid,
