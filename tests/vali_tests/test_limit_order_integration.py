@@ -254,6 +254,7 @@ class TestLimitOrderIntegration(TestBase):
         self.assertAlmostEqual(limit_order_in_position.leverage, 0.2, places=3)
         self.assertGreater(limit_order_in_position.price, 0, "Filled order should have price set")
         self.assertEqual(limit_order_in_position.src, OrderSource.LIMIT_FILLED)
+        self.assertEqual(limit_order_in_position.limit_price, 48000.0, "Filled order keeps the miner's limit")
 
         # Verify position net leverage updated
         expected_leverage = 0.3 + 0.2
@@ -309,6 +310,21 @@ class TestLimitOrderIntegration(TestBase):
         # Verify net leverage reduced
         expected_leverage = 0.4 - 0.2
         self.assertAlmostEqual(updated_position.net_leverage, expected_leverage, places=2)
+
+    def test_immediate_fill_keeps_limit_price(self):
+        """A limit that is marketable on submission fills immediately; the filled order keeps the miner's limit."""
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.live_price_fetcher_client.set_test_market_open(True)
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, self.create_price_source(47500.0, bid=47500.0, ask=47500.0))
+        limit_order = self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2)
+
+        result = self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, limit_order)
+
+        self.assertEqual(result["status"], "success")
+        position = self.position_client.get_open_position_for_trade_pair(self.DEFAULT_MINER_HOTKEY,
+                                                                         self.DEFAULT_TRADE_PAIR.trade_pair_id)
+        filled = next(o for o in position.orders if o.order_uuid == limit_order.order_uuid)
+        self.assertEqual(filled.limit_price, 48000.0)
 
     def test_end_to_end_bracket_order_creation_and_trigger(self):
         """
@@ -418,6 +434,8 @@ class TestLimitOrderIntegration(TestBase):
         self.assertEqual(bracket_fill.order_type, OrderType.FLAT)
         self.assertLess(bracket_fill.quantity, 0, "Bracket fill should offset the LONG position")
         self.assertEqual(bracket_fill.src, OrderSource.BRACKET_FILLED)
+        self.assertEqual(final_position.orders[1].limit_price, 48000.0, "Limit fill keeps the miner's limit")
+        self.assertIsNone(bracket_fill.limit_price, "Bracket fills have no limit price")
 
     def test_bracket_pct_full_close(self):
         """
@@ -936,20 +954,114 @@ class TestLimitOrderIntegration(TestBase):
         result = self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(self.unfilled_orders()), 1, "No immediate fill outside regular hours")
+        # The daemon runs continuously in production; one pass observes the session and the order's arrival
+        # before any trade is injected
+        self.daemon_pass()
 
-    def test_after_hours_long_limit_fills_at_limit_price_on_trade_through(self):
+    def daemon_pass(self):
+        self.limit_order_client.check_and_fill_limit_orders()
+
+    def last_fill(self):
+        position = self.position_client.get_open_position_for_trade_pair(self.DEFAULT_MINER_HOTKEY,
+                                                                         self.DEFAULT_TRADE_PAIR.trade_pair_id)
+        return position.orders[-1]
+
+    def test_after_hours_marketable_on_arrival_fills_at_trade_price(self):
         self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
         self.submit_in_session(self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2))
 
+        # The first trade after the order is already through the limit: the order was marketable on arrival
         self.inject_trade(47900.0)
-        self.limit_order_client.check_and_fill_limit_orders()
+        self.daemon_pass()
 
         self.assertEqual(self.unfilled_orders(), [])
-        position = self.position_client.get_open_position_for_trade_pair(self.DEFAULT_MINER_HOTKEY,
-                                                                         self.DEFAULT_TRADE_PAIR.trade_pair_id)
-        filled = position.orders[-1]
+        filled = self.last_fill()
         self.assertEqual(filled.src, OrderSource.LIMIT_FILLED)
-        self.assertEqual(filled.price, 48000.0, "Fills at the miner's limit price, not the trade price")
+        self.assertEqual(filled.price, 47900.0, "Marketable on arrival: limit or better, at the first trade")
+        self.assertEqual(filled.limit_price, 48000.0, "The miner's limit is kept for auditing the fill")
+
+    def test_after_hours_resting_order_fills_at_limit_price(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2))
+
+        self.inject_trade(48100.0)  # first trade after arrival is not through the limit: the order rests
+        self.daemon_pass()
+        self.assertEqual(len(self.unfilled_orders()), 1)
+
+        self.inject_trade(47900.0)
+        self.daemon_pass()
+        self.assertEqual(self.unfilled_orders(), [])
+        self.assertEqual(self.last_fill().price, 48000.0, "A resting order fills at the miner's limit price")
+        self.assertEqual(self.last_fill().limit_price, 48000.0)
+
+    def test_overnight_order_marketable_at_pre_market_open(self):
+        # Submitted while closed; it arrives when pre-market opens and the market is already below the limit
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2),
+                               session='closed')
+        self.enter_session('pre')
+        self.daemon_pass()  # session opens
+
+        self.inject_trade(47900.0)
+        self.daemon_pass()
+        self.assertEqual(self.unfilled_orders(), [])
+        self.assertEqual(self.last_fill().price, 47900.0)
+
+    def test_order_carried_over_from_regular_session_rests(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, None)
+        self.live_price_fetcher_client.set_test_market_open(True)
+        self.live_price_fetcher_client.set_test_equity_session('regular')
+        result = self.limit_order_client.process_limit_order(
+            self.DEFAULT_MINER_HOTKEY, self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2))
+        self.assertEqual(result["status"], "success")
+        self.daemon_pass()  # resting on the book during the regular session
+
+        self.enter_session('post')
+        self.daemon_pass()
+        self.inject_trade(47900.0)
+        self.daemon_pass()
+        self.assertEqual(self.unfilled_orders(), [])
+        self.assertEqual(self.last_fill().price, 48000.0, "Carried over from an earlier session: resting")
+
+    def test_order_submitted_before_server_start_rests(self):
+        # The server cannot know which trades such an order already rested through, so it is resting
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        order = self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2)
+        order.processed_ms = TimeUtil.now_in_millis() - 2 * 60 * 60 * 1000
+        self.submit_in_session(order)
+
+        self.inject_trade(47900.0)
+        self.daemon_pass()
+        self.assertEqual(self.unfilled_orders(), [])
+        self.assertEqual(self.last_fill().price, 48000.0)
+
+    def test_edit_makes_the_order_arrive_again(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        order = self.create_limit_order(order_type=OrderType.LONG, limit_price=47000.0, leverage=0.2)
+        self.submit_in_session(order)
+        self.inject_trade(47900.0)  # not through 47000: the order rests
+        self.daemon_pass()
+        self.assertEqual(len(self.unfilled_orders()), 1)
+
+        edited = self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2,
+                                         order_uuid=order.order_uuid)
+        result = self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, edited, is_edit=True)
+        self.assertEqual(result["status"], "success")
+        self.daemon_pass()  # the edited order arrives
+        self.inject_trade(47950.0)
+        self.daemon_pass()
+        self.assertEqual(self.unfilled_orders(), [])
+        self.assertEqual(self.last_fill().price, 47950.0, "Edited order was marketable on arrival")
+
+    def test_pre_market_short_marketable_fills_at_trade_price(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.SHORT, limit_price=52000.0, leverage=-0.1),
+                               session='pre')
+        self.inject_trade(52100.0)
+        self.daemon_pass()
+        self.assertEqual(self.unfilled_orders(), [])
+        self.assertEqual(self.last_fill().price, 52100.0)
 
     def test_pre_market_trade_at_limit_fills_short(self):
         self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
