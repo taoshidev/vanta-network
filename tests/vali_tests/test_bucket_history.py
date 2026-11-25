@@ -428,6 +428,7 @@ def rest():
     server = object.__new__(ValidatorRestServer)
     server._get_api_key_safe = MagicMock(return_value="key")
     server.is_valid_api_key = MagicMock(return_value=True)
+    server.can_access_tier = MagicMock(return_value=True)
     server._challenge_period_client = MagicMock()
     server._challenge_period_client.get_bucket_statistics.return_value = {
         "hotkey": HOTKEY, "segments": [{"bucket": "PRO_CHALLENGE_FROM_STANDARD", "start_ms": T2}]}
@@ -459,6 +460,14 @@ def test_rest_unauthorized_and_not_found(rest):
     assert client.get(f"/bucket-statistics/{HOTKEY}").status_code == 404
     server.is_valid_api_key.return_value = False
     assert client.get(f"/bucket-statistics/{HOTKEY}").status_code == 401
+
+
+def test_rest_requires_tier_100(rest):
+    server, client = rest
+    server.can_access_tier.return_value = False
+    assert client.get(f"/bucket-statistics/{HOTKEY}").status_code == 403
+    server.can_access_tier.assert_called_with("key", 100)
+    server._challenge_period_client.get_bucket_statistics.assert_not_called()
 
 
 def test_rest_reads_a_real_manager(manager, rest):

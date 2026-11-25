@@ -739,7 +739,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     BUCKET_STATISTICS_SECTIONS = ("summary", "positions", "snapshots", "stats")
 
     def get_bucket_statistics(self, minerid):
-        """A miner's statistics per bucket stint, oldest first.
+        """A miner's statistics per bucket stint, oldest first. Requires tier 100 API access.
 
         Query params:
             bucket: only segments of this bucket
@@ -750,6 +750,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
             return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 100):
+            return jsonify({'error': 'Your API key does not have access to tier 100 data'}), 403
         if not self._challenge_period_client:
             return jsonify({'error': 'Challenge period data not available'}), 503
 
