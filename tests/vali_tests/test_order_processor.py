@@ -351,7 +351,7 @@ class TestProcessFlatAll(OrderProcessorTestBase):
         result = self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "ALL", self.DEFAULT_NOW_MS)
         self.assertEqual(result.execution_type, ExecutionType.FLAT_ALL)
         self.market_order_client.close_positions.assert_called_once_with(
-            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=None, close_all=True, now_ms=self.DEFAULT_NOW_MS
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=None, close_all=True, now_ms=self.DEFAULT_NOW_MS, relay_hotkey=None
         )
         self.limit_order_client.cancel_limit_order.assert_called_once_with(
             self.DEFAULT_MINER_HOTKEY, None, "ALL", self.DEFAULT_NOW_MS, ExecutionType.BRACKET
@@ -360,19 +360,19 @@ class TestProcessFlatAll(OrderProcessorTestBase):
     def test_close_specific_positions(self):
         self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "pos1,pos2", self.DEFAULT_NOW_MS)
         self.market_order_client.close_positions.assert_called_once_with(
-            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=["pos1", "pos2"], close_all=False, now_ms=self.DEFAULT_NOW_MS
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=["pos1", "pos2"], close_all=False, now_ms=self.DEFAULT_NOW_MS, relay_hotkey=None
         )
 
     def test_empty_uuid_closes_none(self):
         self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "", self.DEFAULT_NOW_MS)
         self.market_order_client.close_positions.assert_called_once_with(
-            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[], close_all=False, now_ms=self.DEFAULT_NOW_MS
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[], close_all=False, now_ms=self.DEFAULT_NOW_MS, relay_hotkey=None
         )
 
     def test_case_insensitive_all(self):
         self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "all", self.DEFAULT_NOW_MS)
         self.market_order_client.close_positions.assert_called_once_with(
-            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=None, close_all=True, now_ms=self.DEFAULT_NOW_MS
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=None, close_all=True, now_ms=self.DEFAULT_NOW_MS, relay_hotkey=None
         )
 
 

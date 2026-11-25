@@ -43,14 +43,14 @@ VECTORS = [
         "c4863e45cc5c87e0090ef50654903b01f885a60436fc328f529dc36781a0cb82",
     ),
     (
-        dict(netuid=116, miner_order_uuid="9d4b2e6f-1c8a-4f3d-b7e5-0a2c6d8f1b43", timestamp_ms=1795000120000,
+        dict(netuid=116, miner_order_uuid="ALL", timestamp_ms=1795000120000,
              signal={"execution_type": "FLAT_ALL"}),
-        '{"miner_order_uuid":"9d4b2e6f-1c8a-4f3d-b7e5-0a2c6d8f1b43","netuid":116,'
+        '{"miner_order_uuid":"ALL","netuid":116,'
         '"origin_hotkey":"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",'
         '"relay_hotkey":"5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty",'
         '"signal":{"execution_type":"FLAT_ALL"},"timestamp_ms":1795000120000,"v":1}',
-        "f0f2aa6c593ece2d90a196d92bde9dfb36c2fb355417da142bc54d6f7dfdcd74"
-        "86d3fd639cb6c6a72247c885cd63aa696b032ffa6e1516c46ee6634bdb1ee182",
+        "a6b07cf7d96bf93ee6ede55200246737c4928fb266736ffb5e0cdedd02440c4a"
+        "014ca32b432eb98ecb06b333418cd114fe946ff5ba07a7364c4b4091a171da85",
     ),
 ]
 

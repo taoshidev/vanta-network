@@ -1206,7 +1206,8 @@ class LimitOrderManager(CacheController):
             execution_type=ExecutionType.LIMIT,
             limit_price=order.limit_price,
             bracket_orders=order.bracket_orders,
-            src=OrderSource.LIMIT_UNFILLED
+            src=OrderSource.LIMIT_UNFILLED,
+            relay_hotkey=order.relay_hotkey
         )
 
         # 3. Process the child limit order (reuses all existing limit order logic including immediate fill check)
@@ -1274,6 +1275,7 @@ class LimitOrderManager(CacheController):
                 slippage=slippage,
                 is_hl_taker=is_taker,
                 enforce_cooldown=is_market_order,
+                relay_hotkey=order.relay_hotkey,
             )
 
             if not result:
@@ -1473,7 +1475,8 @@ class LimitOrderManager(CacheController):
                         stop_loss=bracket_data['stop_loss'],
                         take_profit=bracket_data['take_profit'],
                         trailing_stop=trailing_stop_dict,
-                        src=OrderSource.BRACKET_UNFILLED
+                        src=OrderSource.BRACKET_UNFILLED,
+                        relay_hotkey=parent_order.relay_hotkey
                     )
 
                     if open_position is not None:

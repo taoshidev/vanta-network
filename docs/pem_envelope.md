@@ -30,8 +30,8 @@ A JSON object with exactly these fields. Unknown fields, missing fields and repe
 | `netuid` | integer | Subnet the order is for: `8` mainnet, `116` testnet. Stops an order signed for one network being replayed on the other |
 | `origin_hotkey` | string | The trader's hotkey (SS58). The order is processed as this miner, and the signature is checked against it |
 | `relay_hotkey` | string | The PEM's hotkey (SS58). Must differ from `origin_hotkey` and equal the hotkey that sends the synapse. Binds the order to one PEM: to switch PEMs, the trader signs again |
-| `miner_order_uuid` | string | Order id, 1 to 256 characters. Used once: the validator refuses a uuid it has seen |
-| `timestamp_ms` | integer | When the trader signed, in Unix milliseconds. The validator refuses a payload outside its freshness window |
+| `miner_order_uuid` | string | 1 to 256 characters, meaning what `order_uuid` means in the [Signal Reference](signal_reference.md): the new order's id for MARKET, LIMIT, STOP_LIMIT and BRACKET (refused if already used), and the target for LIMIT_CANCEL, LIMIT_EDIT and FLAT_ALL (`ALL`, an order uuid, or comma-separated position uuids) |
+| `timestamp_ms` | integer | When the trader signed, in Unix milliseconds. The validator refuses a payload more than 60 seconds old or 5 seconds ahead (`ValiConfig.PEM_ENVELOPE_MAX_AGE_MS`, `PEM_ENVELOPE_MAX_FUTURE_MS`) |
 | `signal` | object | The trade, as in the [Signal Reference](signal_reference.md). `trade_pair` takes the trade pair id, e.g. `"BTCUSDC"` |
 
 Example (whitespace added for reading; see Signing for the bytes actually signed):
@@ -89,10 +89,12 @@ The envelope module checks the payload's structure and the trader's signature (`
 1. The sending hotkey is a registered entity with the `permissionless_entity_miner` role, and `relay_hotkey` equals it.
 2. `netuid` is the validator's netuid.
 3. `timestamp_ms` is within the freshness window.
-4. `origin_hotkey` is registered on the subnet, and is neither a synthetic subaccount hotkey nor an entity.
-5. `miner_order_uuid` has not been used by this trader.
+4. `signal`, if the synapse carries one, equals the payload's.
+5. `origin_hotkey` is registered on the subnet. An entity hotkey is refused when the order is validated, as for any order from one.
+6. The payload has not been received before. Each signed payload is accepted once, for every execution type (its SHA-256 is claimed through the validator's order de-duplication); a failed apply releases the claim so the PEM can retry the same payload. A new instruction with the same `miner_order_uuid`, such as a second `FLAT_ALL` of `ALL`, is signed at a new time, so it is a different payload.
+7. For MARKET, LIMIT, STOP_LIMIT and BRACKET, `miner_order_uuid` has not been used before, as for any order.
 
-Then the order is processed as `origin_hotkey`, under that miner's account rules, and the order records the PEM as `relay_hotkey`. The signature itself is not stored.
+These checks run before the trader's rate limit. Then the order is processed as `origin_hotkey`, under that miner's account rules, and every order it creates records the PEM as `relay_hotkey`: the order itself, the closes of a FLAT_ALL, the fills of its limit and stop-limit orders, and the brackets placed with it. The signature itself is not stored.
 
 ---
 
@@ -136,16 +138,16 @@ b218bcf6e59bfaaff8e3bf93c92621b98e160dcb57738ffc540589c4078b8944c4863e45cc5c87e0
 
 ### 3. Flat all, testnet
 
-Inputs: `netuid` 116, `miner_order_uuid` `9d4b2e6f-1c8a-4f3d-b7e5-0a2c6d8f1b43`, `timestamp_ms` 1795000120000, signal `{"execution_type": "FLAT_ALL"}`
+Inputs: `netuid` 116, `miner_order_uuid` `ALL` (close every open position), `timestamp_ms` 1795000120000, signal `{"execution_type": "FLAT_ALL"}`
 
 ```
-{"miner_order_uuid":"9d4b2e6f-1c8a-4f3d-b7e5-0a2c6d8f1b43","netuid":116,"origin_hotkey":"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY","relay_hotkey":"5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty","signal":{"execution_type":"FLAT_ALL"},"timestamp_ms":1795000120000,"v":1}
+{"miner_order_uuid":"ALL","netuid":116,"origin_hotkey":"5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY","relay_hotkey":"5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty","signal":{"execution_type":"FLAT_ALL"},"timestamp_ms":1795000120000,"v":1}
 ```
 
 Sample signature:
 
 ```
-f0f2aa6c593ece2d90a196d92bde9dfb36c2fb355417da142bc54d6f7dfdcd7486d3fd639cb6c6a72247c885cd63aa696b032ffa6e1516c46ee6634bdb1ee182
+a6b07cf7d96bf93ee6ede55200246737c4928fb266736ffb5e0cdedd02440c4a014ca32b432eb98ecb06b333418cd114fe946ff5ba07a7364c4b4091a171da85
 ```
 
 ---

@@ -40,6 +40,7 @@ class MarketOrderClient(RPCClientBase):
         is_hl_taker: bool | None = None,
         now_ms: int | None = None,
         enforce_cooldown: bool = True,
+        relay_hotkey: str | None = None,
     ):
         return self._server.execute_order_rpc(
             hotkey=hotkey,
@@ -57,14 +58,17 @@ class MarketOrderClient(RPCClientBase):
             is_hl_taker=is_hl_taker,
             now_ms=now_ms,
             enforce_cooldown=enforce_cooldown,
+            relay_hotkey=relay_hotkey,
         )
 
-    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
+    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None,
+                        relay_hotkey: str | None = None):
         return self._server.close_positions_rpc(
             hotkey=hotkey,
             position_uuids=position_uuids,
             close_all=close_all,
             now_ms=now_ms,
+            relay_hotkey=relay_hotkey,
         )
 
     def clear_order_cooldown_cache(self):
