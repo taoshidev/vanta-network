@@ -51,6 +51,10 @@ class SendSignal(bt.Synapse):
     order_json: str = Field("", title="New Order JSON set by validator", frozen=False)
     miner_order_uuid: str = Field("", title="Order UUID set by miner", frozen=False, max_length=256)
     subaccount_id: typing.Optional[int] = Field(default=None, title="Subaccount ID for entity miners", frozen=False)
+    # Set by a permissionless entity miner relaying a trader's order (docs/pem_envelope.md). Not in
+    # required_hash_fields: the trader's signature covers the payload, and the dendrite signature the relay
+    origin_payload: typing.Optional[str] = Field(default=None, title="Trader-signed order payload (exact signed string)", frozen=False, max_length=8192)
+    origin_signature: typing.Optional[str] = Field(default=None, title="Trader hotkey's sr25519 signature over origin_payload, hex", frozen=False, max_length=256)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 
     @staticmethod
