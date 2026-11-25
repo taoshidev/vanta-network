@@ -80,11 +80,12 @@ npm run preview  # Preview production build
   - `locks/` - Position locking mechanisms
   - `metagraph/` - Metagraph management and caching
   - Utilities: cache_controller, slack_notifier, error_utils
+  - `pem_envelope.py` - Builds, signs and verifies the order envelope a trader signs for a permissionless entity miner (`docs/pem_envelope.md`)
 - **`miner_objects/`** - Miner tooling
   - `miner_dashboard/` - React/TypeScript dashboard for monitoring
   - `prop_net_order_placer.py` - Order placement utilities
   - `position_inspector.py` - Position analysis tools
-- **`entity_management/`** - Entity miners: entity registration, subaccount creation, bucket promotion, and payout calculation
+- **`entity_management/`** - Entity miners: entity registration and roles (`EntityRole`: `entity_miner`, `permissionless_entity_miner`), subaccount creation, bucket promotion, and payout calculation
 - **`template/`** - Bittensor protocol definitions and base classes
 
 ### Data Infrastructure
@@ -125,7 +126,7 @@ The system uses a distributed RPC architecture for inter-process communication:
   - Challenge period and elimination thresholds
 - **`miner_config.py`** - Miner configuration
 - **`requirements.txt`** - Python dependencies (Bittensor 10.3.0, Pydantic 2.10.3, financial APIs)
-- **`meta/meta.json`** - Version management (subnet_version: 8.17.1)
+- **`meta/meta.json`** - Version management (subnet_version: 8.18.0)
 - **`setup.py`** - Package setup (taoshi-prop-net)
 
 ## Trading System Architecture
@@ -136,6 +137,8 @@ The system uses a distributed RPC architecture for inter-process communication:
 3. Real-time price validation using multiple data sources (Hyperliquid, Polygon/Massive, Tiingo, Databento). For equities a Nasdaq Basic quote replaces FMV when one is within 8s (`PriceSource.apply_nasdaq_fmv_rule`)
 4. Position tracking via RPC services with leverage limits and slippage modeling
 5. Performance calculation using debt-based scoring system
+
+**Permissionless entity miners (PEM)**: an entity registered with the `permissionless_entity_miner` role (`vanta entity register --role permissionless_entity_miner --take 0.1`, 1,000 theta per role, a take of at least `ValiConfig.PEM_MIN_TAKE`; one hotkey may hold both roles, counted once toward `MAX_REGISTERED_ENTITIES`) relays orders its traders sign. Traders are standard accounts under their own hotkeys, not subaccounts; the PEM posts their trader-signed `/collateral/deposit` and `/account/open`. The trader signs a payload (`shared_objects/pem_envelope.py`); the PEM posts it to its entity miner's `POST /api/pem/submit-order`, which forwards it in `SendSignal.origin_payload` / `origin_signature`. The validator (`Validator._receive_signal_sync`) checks the trader's signature, that the sender holds the role and is the payload's `relay_hotkey`, the netuid, a 60s/5s freshness window (`PEM_ENVELOPE_MAX_AGE_MS` / `PEM_ENVELOPE_MAX_FUTURE_MS`) and the trader's registration, then the trader's rate limit, claims the payload's SHA-256 so each payload is used once, and processes the order as the trader with `relay_hotkey` passed down. `Order.relay_hotkey` is set on every order the signal creates and inherited by limit/stop-limit fills, brackets and FLAT_ALL closes; validator-generated orders leave it None. The profit split is not paid yet
 
 ### Supported Assets
 - **Crypto**: BTC/USDC, ETH/USDC, SOL/USDC, XRP/USDC, DOGE/USDC, ADA/USDC, etc. (Hyperliquid USDC pairs; native USD-denominated equivalents are blocked in favor of these)
@@ -276,7 +279,7 @@ The `run.sh` script provides production deployment with:
 - `kill_timeout` 10s for `vanta`, `vanta-state`, `vanta-orders`, `vanta-rest` and `vanta-ws` (PM2's default is 1.6s)
 
 ### Version Management
-- Current version: 8.17.1 (in `meta/meta.json`)
+- Current version: 8.18.0 (in `meta/meta.json`)
 - Version checking against GitHub API
 - Automatic pip install and package updates
 - Safe rollback: git pull only if version is newer

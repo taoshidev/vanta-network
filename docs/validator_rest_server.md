@@ -707,7 +707,7 @@ What a withdrawal would do, without doing it: the slash, the net amount and, for
 }
 ```
 
-`version` is the vanta-cli version; an outdated one is rejected with a 400.
+`version` is the vanta-cli version; an outdated one is rejected with a 400. A client other than vanta-cli, such as a permissionless entity miner's backend posting a deposit its trader signed, sends a version at or above `ValiConfig.VANTA_CLI_MINIMUM_VERSION`. The deposit is authorized by the extrinsic's signature, whoever posts it.
 
 **Response (existing rules):**
 ```json
@@ -887,7 +887,7 @@ A miner whose hotkey registered after the standard account cutoff block opens it
 - `leverage_tier` (int): 1 Base, 2 Boost I or 3 Boost II (`ValiConfig.STANDARD_LEVERAGE_TIERS`); the miner cannot change it afterwards, and passing the challenge moves the account to tier 3
 - `nonce` (string) and `timestamp` (int, ms): single use, so every request is freshly signed
 - `signature` (string): The coldkey's signature, hex, over the sorted JSON of `leverage_tier`, `miner_coldkey`, `miner_hotkey`, `nonce` and `timestamp`
-- `version` (string): The vanta-cli version
+- `version` (string): The vanta-cli version. A client other than vanta-cli, such as a permissionless entity miner's backend posting an opening its trader signed, sends a version at or above `ValiConfig.VANTA_CLI_MINIMUM_VERSION`; the request is authorized by the coldkey signature, whoever posts it
 
 The account size is the collateral's USD value at the opening theta price divided by the tier's collateral percentage (0.7% / 1.1% / 1.5%), capped at $100,000, and the theta that backs it at that price is locked.
 
@@ -1152,35 +1152,43 @@ The entity management endpoints enable entity miners to register, create subacco
 
 `POST /entity/register`
 
-Register a new entity miner that can create and manage subaccounts.
+Register a new entity, or add a role to a registered entity. An entity registers as an entity miner (`entity_miner`: creates and manages subaccounts), as a permissionless entity miner (`permissionless_entity_miner`: relays orders its traders sign with their own hotkeys, see [entity_miner.md](entity_miner.md#permissionless-entity-miners)), or both. Each role costs a 1,000 Theta registration fee, slashed from the entity's collateral. Processed by the mothership only.
+
+**Authentication:** Coldkey signature (no API key required).
 
 **Request Body:**
 ```json
 {
-  "entity_hotkey": "5GhDr3xy...abc"
+  "entity_coldkey": "<coldkey_ss58>",
+  "entity_hotkey": "<hotkey_ss58>",
+  "role": "permissionless_entity_miner",
+  "pem_take": 0.1,
+  "signature": "<coldkey_signature>",
+  "version": "3.3.0"
 }
 ```
+
+**Parameters:**
+- `entity_coldkey` (string, required): The coldkey that owns `entity_hotkey` on chain
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `role` (string, optional): `entity_miner` (default) or `permissionless_entity_miner`
+- `pem_take` (float): The permissionless entity miner's profit share, at least `ValiConfig.PEM_MIN_TAKE` (0.1) and below 1. Required for `permissionless_entity_miner`, refused for `entity_miner`
+- `signature` (string, required): The coldkey's signature, hex, over the sorted JSON of `entity_coldkey`, `entity_hotkey`, and `role` and `pem_take` when the request carries them. A request without them signs the same message as before roles existed
+- `version` (string): The vanta-cli version; an outdated one is rejected with a 400
 
 **Response:**
 ```json
 {
   "status": "success",
-  "message": "Entity 5GhDr3xy...abc registered successfully",
-  "entity_hotkey": "5GhDr3xy...abc"
+  "message": "Entity registered successfully as permissionless_entity_miner - 1000 theta registration fee slashed",
+  "entity_hotkey": "5GhDr3xy...abc",
+  "role": "permissionless_entity_miner"
 }
 ```
 
-**Parameters:**
-- `entity_hotkey` (string, required): The entity's hotkey SS58 address
-- `collateral_amount` (float, optional): Collateral amount in alpha tokens (default: 0.0)
+A new entity counts toward `ValiConfig.MAX_REGISTERED_ENTITIES` (10) and must not already be a miner. A registered entity adding the other role does not count again. Errors: 400 for an invalid `role` or `pem_take`, a role the entity already holds, the entity cap, a hotkey already used as a miner, insufficient collateral, or a request that reached a validator other than the mothership; 401 for a bad signature; 403 when the coldkey does not own the hotkey.
 
-**Example:**
-```bash
-curl -X POST http://localhost:48888/entity/register \
-  -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"entity_hotkey": "5GhDr3xy...abc"}'
-```
+The registration's roles appear in `GET /entity/<entity_hotkey>` as `roles`, with `pem_take` and `pem_registered_at_ms` for a permissionless entity miner.
 
 ### Request Entity API Key
 

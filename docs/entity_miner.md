@@ -6,19 +6,61 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 
 **Key rule: Entity hotkeys cannot submit orders directly. Only subaccounts can place trades.**
 
+An entity can also register as a **permissionless entity miner** (PEM): a venue that relays orders its traders sign themselves, where each trader is a miner with their own hotkey rather than a subaccount. The two are roles of the same entity, and one hotkey can hold both. See [Permissionless Entity Miners](#permissionless-entity-miners).
+
 ## Basic Rules
 
 1. Entity hotkeys must be registered on the Bittensor network and have sufficient Theta collateral.
-2. An entity pays a one-time registration fee of **1,000 Theta**, which is permanently slashed on registration.
+2. An entity pays a one-time registration fee of **1,000 Theta** for each role it registers (`entity_miner`, `permissionless_entity_miner`), permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
 4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, `commodities`, `hl_all`, or `all_markets`) at creation. It **cannot be changed by the entity**; the one exception is promotion onto a pro account, which moves the subaccount to `all_markets` (see [Pro account size](#pro-account-size)). HyperLiquid-linked subaccounts always use `hl_all`.
 5. New subaccounts enter a **challenge period** with stricter thresholds; HL-linked subaccounts also trade at reduced leverage during it (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours and per-session order types ([Market Hours and Order Types](miner.md#market-hours-and-order-types)), rate limits, etc.
-8. A maximum of **10 entities** can be registered on the network at any time.
+8. A maximum of **10 entities** can be registered on the network at any time, counted by hotkey: an entity holding both roles counts once.
 9. Each entity supports multiple subaccounts.
 10. **CRITICAL**: Never reuse synthetic hotkeys from eliminated subaccounts. Eliminated synthetic hotkeys are permanently blacklisted.
 11. Subaccounts are eliminated for inactivity: a subaccount in any trading bucket — `SUBACCOUNT_CHALLENGE`, `SUBACCOUNT_FUNDED`, `SUBACCOUNT_ALPHA`, or any pro bucket — that goes **60 days** without submitting a single order is eliminated with reason `INACTIVE`, the same rule applied to regular miners. This does not apply to the entity hotkey itself, which never submits orders.
+
+## Permissionless Entity Miners
+
+A permissionless entity miner is a venue or order router. It runs its own interface and infrastructure, onboards traders, and relays the orders they sign to the validators. Anyone can run one.
+
+Its traders are **not subaccounts**. Each trader is a miner with their own hotkey registered on the subnet, trading on the [standard account track](miner.md#standard-account-track) under that hotkey and paid by the network directly. The PEM never holds a trader's keys or collateral, and posts no collateral for them.
+
+### Registering the role
+
+```bash
+# A new entity, or an entity miner adding the role
+vanta entity register --wallet-name <wallet> --wallet-hotkey <entity> --role permissionless_entity_miner --take 0.1
+```
+
+- The role costs **1,000 Theta** (`ValiConfig.PERMISSIONLESS_ENTITY_MINER_REGISTRATION_FEE`), slashed from the entity's collateral, whether the hotkey is new or already registered as an entity miner. An entity miner registers the role with the same command; a PEM adds the entity miner role with `--role entity_miner` (the default), for its own fee.
+- `--take` is the PEM's profit share of the PnL its traders make through it: at least **10%** (`ValiConfig.PEM_MIN_TAKE`) and below 100%. It is set at registration and cannot be changed yet.
+- The hotkey goes to the `ENTITY` bucket, like any entity: it receives the entity dust weight and cannot place orders. A hotkey holding only this role cannot create subaccounts.
+
+### How traders join
+
+The PEM's interface creates the trader's keys **on the trader's device** and prepares each step; the trader's keys sign it, and the PEM may submit it. Every step uses the network's existing endpoints, which accept a request from any sender as long as the trader's key signed it.
+
+| Step | What is signed | Submitted to |
+|------|----------------|--------------|
+| Register the hotkey on the subnet | The trader's coldkey (`burned_register`) | The chain |
+| Deposit collateral | The trader's coldkey signs the stake transfer extrinsic | `POST /collateral/deposit` |
+| Open the standard account | The trader's coldkey signs the opening request | `POST /account/open` |
+| Withdraw collateral | The trader's coldkey signs the withdrawal request | `POST /collateral/withdraw` |
+
+These endpoints check the `version` field against `ValiConfig.VANTA_CLI_MINIMUM_VERSION`, so a PEM's client sends a version at or above it. See [validator_rest_server.md](validator_rest_server.md).
+
+### Relaying orders
+
+1. The trader's device builds the order payload, which names the trader, the PEM's hotkey as `relay_hotkey`, the netuid and the time, and signs it with the trader's hotkey. The format is in [pem_envelope.md](pem_envelope.md).
+2. The PEM posts the payload and signature unchanged to its entity miner's `POST /api/pem/submit-order` ([entity_miner_rest_server.md](entity_miner_rest_server.md#relay-a-traders-order)), which sends them to the validators in `SendSignal`.
+3. The validator checks the trader's signature, that the sender is the PEM the payload names and holds the role, the netuid, that the payload is at most 60 seconds old, and that the trader is registered. It then processes the order as the trader's, under the trader's account rules and rate limit. Each signed payload is accepted once.
+
+Every order the trader places through the PEM records the PEM as `relay_hotkey`, and so do the orders that follow from it: limit and stop-limit fills, brackets, and the closes of a `FLAT_ALL`. The profit share is meant to apply only to a position opened and closed through the same PEM.
+
+**Not yet in place:** the profit share is recorded but not yet paid; the PEM's emissions are its entity dust weight. A PEM's validator API key (`vanta entity apikey`, tier 200) can read every miner's data, not only its own traders'.
 
 ## Collateral Requirements
 
@@ -30,7 +72,7 @@ When a subaccount is created, the registration fee is burned from the entity's c
 
 | Created into | Priced by | CPT | Fee at $100,000 | Fee at $10,000 |
 |---|---|---|---|---|
-| Entity registration (one-time) | — | — | 1,000 Theta | — |
+| Entity registration (one-time, per role) | — | — | 1,000 Theta | — |
 | `SUBACCOUNT_CHALLENGE` or `PRO_CHALLENGE_DIRECT` | 5% daily loss limit (default) | 1,500 | 66.67 Theta | 13.33 Theta |
 | `SUBACCOUNT_CHALLENGE` or `PRO_CHALLENGE_DIRECT` | 3% daily loss limit | 2,500 | 40 Theta | 8 Theta |
 | Instant Funded (`SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_FROM_STANDARD`) | 5% EOD limit | 400 | 250 Theta | 50 Theta |
@@ -706,6 +748,8 @@ vanta entity register --wallet-name <wallet> --wallet-hotkey <entity> --network 
 
 On success, the entity hotkey is assigned to the `ENTITY` bucket and receives a baseline 4× dust weight in the incentive system.
 
+To register as a [permissionless entity miner](#permissionless-entity-miners) instead, or to add that role to a registered entity, pass `--role permissionless_entity_miner --take <share>`. Each role costs its own 1,000 Theta.
+
 ### 7. Obtain Validator API Key
 
 After registering your entity, request a validator API key. This key authenticates the entity miner gateway's WebSocket connection to the validator, which is required for real-time subaccount dashboard streaming.
@@ -968,7 +1012,7 @@ All validator endpoints require a valid API key (tier 200) in the `Authorization
 
 | Method | Endpoint | Description                                                       |
 |---|---|-------------------------------------------------------------------|
-| POST | `/entity/register` | Register a new entity (requires coldkey signature + 1,000 Theta)  |
+| POST | `/entity/register` | Register a new entity or add a role to one (requires coldkey signature + 1,000 Theta per role) |
 | POST | `/entity/create-subaccount` | Create a subaccount (requires coldkey signature + collateral)     |
 | GET | `/entity/<entity_hotkey>` | Get entity data and subaccount list                               |
 | GET | `/entities` | List all registered entities                                      |
@@ -988,6 +1032,8 @@ All validator endpoints require a valid API key (tier 200) in the `Authorization
 ```
 
 The signature is produced by signing `{"entity_coldkey": "...", "entity_hotkey": "..."}` (JSON, sorted keys) with the coldkey.
+
+To register the permissionless entity miner role, add `"role": "permissionless_entity_miner"` and `"pem_take": 0.1` (at least 0.1, below 1). `role` defaults to `"entity_miner"`; `pem_take` is refused for that role. Both are added to the signed payload when sent, so a request without them signs the field set above.
 
 #### POST /entity/create-subaccount
 
@@ -1027,6 +1073,7 @@ Response:
 |---|---|---|
 | POST | `/api/create-subaccount` | Create a standard subaccount (proxies to validator) |
 | POST | `/api/promote` | Promote a subaccount a step up the pro track (proxies to validator) |
+| POST | `/api/pem/submit-order` | Relay an order a trader signed, as a permissionless entity miner ([details](entity_miner_rest_server.md#relay-a-traders-order)) |
 | GET | `/api/health` | Health check |
 
 #### POST /api/promote
@@ -1103,7 +1150,8 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 
 | Constraint                                    | Value                                  |
 |------------------------------------------------|----------------------------------------|
-| Max entities on the network                   | 10                                     |
+| Max entities on the network                   | 10, by hotkey (both roles count once)  |
+| Permissionless entity miner profit share      | At least 10%, set at registration      |
 | Max account size per subaccount               | $100,000 USD                           |
 | Challenge period return threshold             | 10% crypto/equities/commodities/multi-class, 8% forex; on equity, held 3 minutes |
 | Challenge period drawdown threshold (trailing) | 5%                                     |

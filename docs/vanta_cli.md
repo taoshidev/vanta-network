@@ -129,7 +129,16 @@ These commands are for entity miners. See the [entity miner guide](entity_miner.
 ```bash
 vanta entity register [OPTIONS]
 ```
-Register your hotkey as an entity on the Vanta Network.
+Register your hotkey as an entity on the Vanta Network, or add a role to a registered entity. Each role costs 1,000 Theta.
+
+**Additional options:**
+- `--role` - `entity_miner` (default: creates subaccounts) or `permissionless_entity_miner` (relays orders its traders sign, see [Permissionless Entity Miners](entity_miner.md#permissionless-entity-miners))
+- `--take` - Profit share of a permissionless entity miner, e.g. `0.1` for 10% (at least 0.1, below 1). Required for `permissionless_entity_miner` (prompted when omitted)
+
+```bash
+# Register as a permissionless entity miner, or add the role to an entity miner
+vanta entity register --wallet-name <wallet> --hotkey <entity> --role permissionless_entity_miner --take 0.1
+```
 
 #### Create Subaccount
 ```bash

@@ -16,6 +16,8 @@ The entity miner server inherits all endpoints from `MinerRestServer`. See [mine
 | `/api/order-status/<uuid>` | GET | API key | Query order processing status |
 | `/api/health` | GET | None | Health check (extended with entity fields) |
 
+The entity-specific endpoints below add `/api/pem/submit-order` for permissionless entity miners, which relays orders traders sign themselves ([Relay a Trader's Order](#relay-a-traders-order)).
+
 The health endpoint returns additional fields when running as an entity miner:
 
 ```json
@@ -474,6 +476,56 @@ curl -X POST http://localhost:8088/api/create-hl-subaccount \
 - The HL address is stored in `entity_hl_mappings.json` alongside `miner_secrets.json` and persists across restarts
 - After creation, the gateway subscribes to the validator WebSocket for dashboard updates for this address
 - If `max_hl_traders` is configured, the gateway enforces it before forwarding the request to the validator
+
+### Relay a Trader's Order
+
+`POST /api/pem/submit-order`
+
+Relays an order a trader signed to the validators, for an entity registered as a permissionless entity miner (see [entity_miner.md](entity_miner.md#permissionless-entity-miners)). The trader's device builds and signs the payload ([pem_envelope.md](pem_envelope.md)); this server forwards it unchanged in `SendSignal.origin_payload` / `origin_signature`, signed by the miner's own hotkey, to the mothership and the other validators as for any order.
+
+**Authentication:** API key required.
+
+**Request Body:**
+```json
+{
+  "origin_payload": "{\"miner_order_uuid\":\"0b3c1f4e-...\",\"netuid\":8,\"origin_hotkey\":\"5Grwva...\",\"relay_hotkey\":\"5FHneW...\",\"signal\":{...},\"timestamp_ms\":1795000000000,\"v\":1}",
+  "origin_signature": "3608e544..."
+}
+```
+
+**Parameters:**
+- `origin_payload` (string, required): The exact string the trader signed. Do not re-serialize it
+- `origin_signature` (string, required): The trader hotkey's sr25519 signature over `origin_payload`, hex
+
+Before relaying, the server checks the trader's signature, that the payload names this miner's hotkey as `relay_hotkey` and this miner's netuid, that `timestamp_ms` is within the validators' window (at most 60 seconds old, 5 seconds ahead), and that the signal is valid, so an order the validators would refuse fails fast. The validators repeat these checks and also require this hotkey to hold the `permissionless_entity_miner` role.
+
+**Success Response (200):** as [`/api/submit-order`](miner_rest_server.md), plus the trader and the relay:
+```json
+{
+  "success": true,
+  "order_uuid": "0b3c1f4e-7a2d-4c1e-9f6a-2d8e5b7c9a01",
+  "order_json": "...",
+  "error_message": "",
+  "processing_time": 0.42,
+  "message": "Order successfully processed by Vanta Network",
+  "origin_hotkey": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+  "relay_hotkey": "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
+}
+```
+
+**Error Responses:**
+
+| Code | Cause |
+|------|-------|
+| 400 | Not a JSON object; an invalid envelope or signature; a payload for another relay or netuid; a timestamp outside the window; an invalid signal; or the validators rejected the order (`error_message` carries their reason) |
+| 401 | Invalid or missing API key |
+| 500 | Error while sending to the validators |
+| 503 | The miner has no order placer |
+
+**Notes:**
+- The order is the trader's: it is processed under the trader's hotkey and account rules, and records this miner as `relay_hotkey`.
+- Each signed payload is accepted once. A resend after a failure the validators report as transient is accepted; a new order needs a new signature.
+- The payload's `miner_order_uuid` is the order's `order_uuid` as in the [signal reference](signal_reference.md): a new id for orders, the target (`ALL`, an order uuid, or position uuids) for `LIMIT_CANCEL`, `LIMIT_EDIT` and `FLAT_ALL`.
 
 ## WebSocket Connection
 
