@@ -470,7 +470,7 @@ class SubtensorOpsManager(CacheController):
 
         Args:
             request: One of vanta_protocol's *Request models — SendSignalRequest/
-                GetPositionsRequest/ValidatorCheckpointRequest keep their own type, while
+                GetPositionsRequest keep their own type, while
                 every other broadcast (CollateralRecord, AssetSelection, SubaccountRegistration,
                 EntityEndpointUpdate, StandardMinerOpening, StandardMinerRecord,
                 AccountSizeLocks) shares the generic BroadcastRequest shape — already

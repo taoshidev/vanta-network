@@ -46,8 +46,6 @@ class TestSynapsePickling(unittest.TestCase):
             "return_at_close": 0.05
         }
 
-        self.checkpoint_data = "compressed_checkpoint_data_here"
-
         self.collateral_record = {
             "hotkey": "test_hotkey",
             "collateral_amount": 1000.0
@@ -108,23 +106,6 @@ class TestSynapsePickling(unittest.TestCase):
         self.assertEqual(len(unpickled_response.positions), 1)
         self.assertEqual(unpickled_response.positions[0], self.position_data)
 
-    def test_pickle_validator_checkpoint_synapse(self):
-        """Test that ValidatorCheckpointRequest/ValidatorCheckpointResponse can be pickled.
-
-        checkpoint lives on the request, validator_receive_hotkey on the response.
-        """
-        request = vanta_protocol.ValidatorCheckpointRequest(checkpoint=self.checkpoint_data)
-        pickled_request = pickle.dumps(request)
-        unpickled_request = pickle.loads(pickled_request)
-        self.assertIsInstance(unpickled_request, vanta_protocol.ValidatorCheckpointRequest)
-        self.assertEqual(unpickled_request.checkpoint, self.checkpoint_data)
-
-        response = vanta_protocol.ValidatorCheckpointResponse(validator_receive_hotkey="receiver_hotkey")
-        pickled_response = pickle.dumps(response)
-        unpickled_response = pickle.loads(pickled_response)
-        self.assertIsInstance(unpickled_response, vanta_protocol.ValidatorCheckpointResponse)
-        self.assertEqual(unpickled_response.validator_receive_hotkey, "receiver_hotkey")
-
     def test_pickle_broadcast_request_synapse(self):
         """Test that the generic BroadcastRequest (shared by CollateralRecord, AssetSelection,
         SubaccountRegistration, StandardMinerOpening, StandardMinerRecord, EntityEndpointUpdate
@@ -155,10 +136,6 @@ class TestSynapsePickling(unittest.TestCase):
                 positions=[self.position_data],
                 successfully_processed=False,
                 error_message="error"
-            ),
-            vanta_protocol.ValidatorCheckpointResponse(
-                successfully_processed=True,
-                validator_receive_hotkey="receiver"
             ),
             # Shared by CollateralRecord, AssetSelection, SubaccountRegistration,
             # StandardMinerOpening, StandardMinerRecord, EntityEndpointUpdate, AccountSizeLocks.
@@ -435,7 +412,6 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
         # _serialize_request (which is request-only).
         synapses = [
             vanta_protocol.SendSignalRequest(signal={"test": "data"}),
-            vanta_protocol.ValidatorCheckpointRequest(checkpoint="checkpoint"),
             # CollateralRecord/AssetSelection/SubaccountRegistration/StandardMinerOpening/
             # StandardMinerRecord all share this generic shape now.
             vanta_protocol.BroadcastRequest(payload={"amount": 100}),
@@ -458,8 +434,6 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             # Verify data fields preserved (check first field of each type)
             if isinstance(transmitted, vanta_protocol.SendSignalRequest):
                 self.assertEqual(transmitted.signal, original_synapse.signal)
-            elif isinstance(transmitted, vanta_protocol.ValidatorCheckpointRequest):
-                self.assertEqual(transmitted.checkpoint, original_synapse.checkpoint)
             elif isinstance(transmitted, vanta_protocol.BroadcastRequest):
                 self.assertEqual(transmitted.payload, original_synapse.payload)
 

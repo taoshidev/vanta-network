@@ -53,7 +53,7 @@ class ErrorUtils:
             relevant_keywords = [
                 'metagraph', 'miner', 'validator', 'vali_', 'neurons/',
                 'position', 'elimination', 'challengeperiod', 'weight', 
-                'mdd_checker', 'auto_sync', 'p2p_syncer', 'plagiarism'
+                'mdd_checker', 'auto_sync', 'plagiarism'
             ]
         
         # Get traceback lines
@@ -101,7 +101,6 @@ class ErrorUtils:
             "challengeperiod_manager": "Challenge period refresh",
             "elimination_manager": "Elimination processing",
             "weight_setter": "Weight setting",
-            "p2p_syncer": "P2P sync",
             "metagraph": "Metagraph update",
             "plagiarism": "Plagiarism detection",
             "perf_ledger": "Performance ledger update",

@@ -7,8 +7,6 @@ from vanta_protocol.base import Ack
 from vanta_protocol.broadcast import (
     BroadcastRequest,
     BroadcastResponse,
-    ValidatorCheckpointRequest,
-    ValidatorCheckpointResponse,
 )
 from vanta_protocol.signals import (
     GetPositionsRequest,
@@ -24,7 +22,6 @@ from vanta_protocol.signals import (
 MESSAGE_TYPES: dict = {
     "SendSignal": (SendSignalRequest, SendSignalResponse),
     "GetPositions": (GetPositionsRequest, GetPositionsResponse),
-    "ValidatorCheckpoint": (ValidatorCheckpointRequest, ValidatorCheckpointResponse),
     "CollateralRecord": (BroadcastRequest, BroadcastResponse),
     "AssetSelection": (BroadcastRequest, BroadcastResponse),
     "SubaccountRegistration": (BroadcastRequest, BroadcastResponse),
@@ -49,7 +46,6 @@ MESSAGE_TYPES: dict = {
 LEGACY_HASH_FIELDS: dict = {
     "SendSignal": ("signal",),
     "GetPositions": ("positions",),
-    "ValidatorCheckpoint": ("checkpoint",),
 }
 
 __all__ = [
@@ -58,6 +54,5 @@ __all__ = [
     "LEGACY_HASH_FIELDS",
     "SendSignalRequest", "SendSignalResponse",
     "GetPositionsRequest", "GetPositionsResponse",
-    "ValidatorCheckpointRequest", "ValidatorCheckpointResponse",
     "BroadcastRequest", "BroadcastResponse",
 ]
