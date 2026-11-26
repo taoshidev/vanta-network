@@ -40,6 +40,9 @@ from entity_management.entity_utils import pro_account_size_error, subaccount_cr
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vanta_api.miner_rest_server import MinerRestServer
+from shared_objects.pem_envelope import EnvelopeError, verify_envelope
+from time_util.time_util import TimeUtil
+from vali_objects.vali_dataclasses.order_signal import Signal
 from shared_objects.log import logger
 
 try:
@@ -416,7 +419,84 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/update-subaccount-leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier_endpoint)
         self.app.route("/api/promote", methods=["POST"])(self.promote_endpoint)
-        print("[ENTITY-GW-INIT] 10 endpoints registered (3 inherited + 7 entity-specific)")
+        self.app.route("/api/pem/submit-order", methods=["POST"])(self.pem_submit_order_endpoint)
+        print("[ENTITY-GW-INIT] 11 endpoints registered (3 inherited + 8 entity-specific)")
+
+    def pem_submit_order_endpoint(self):
+        """
+        Relay an order a trader signed to validators, as a permissionless entity miner (docs/pem_envelope.md).
+
+        The envelope is forwarded unchanged in SendSignal.origin_payload / origin_signature, signed by this miner's
+        dendrite. It is checked here first so an order the validators would refuse fails fast: the trader's
+        signature, that the payload names this miner's hotkey as relay_hotkey and this miner's netuid, and the
+        freshness window. The validators repeat every check and also require this hotkey to be registered with
+        the permissionless_entity_miner role.
+
+        Request body (JSON):
+        {
+            "origin_payload": "{\"miner_order_uuid\":\"...\",\"netuid\":8,...}",  // the exact string the trader signed
+            "origin_signature": "3608e544..."                                     // hex sr25519 signature by origin_hotkey
+        }
+
+        Response: as /api/submit-order, plus origin_hotkey and relay_hotkey. 400 for an envelope this miner
+        refuses or the validators reject, 401 without a valid API key, 503 if this miner has no order placer.
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if self.order_placer is None:
+            return jsonify({'success': False, 'error': 'Order relaying is not available on this miner'}), 503
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'success': False, 'error': 'Invalid request: expected a JSON object'}), 400
+        origin_payload = data.get('origin_payload')
+        origin_signature = data.get('origin_signature')
+        try:
+            envelope = verify_envelope(origin_payload, origin_signature)
+        except EnvelopeError as e:
+            return jsonify({'success': False, 'error': f'Invalid order envelope: {e}'}), 400
+
+        relay_hotkey = self.order_placer.wallet.hotkey.ss58_address
+        netuid = self.order_placer.config.netuid
+        now_ms = TimeUtil.now_in_millis()
+        if envelope.relay_hotkey != relay_hotkey:
+            error = f"The envelope names relay_hotkey {envelope.relay_hotkey}, not this miner's {relay_hotkey}"
+        elif envelope.netuid != netuid:
+            error = f"The envelope is for netuid {envelope.netuid}, not {netuid}"
+        elif not (now_ms - ValiConfig.PEM_ENVELOPE_MAX_AGE_MS <= envelope.timestamp_ms
+                  <= now_ms + ValiConfig.PEM_ENVELOPE_MAX_FUTURE_MS):
+            error = (f"The envelope's timestamp_ms {envelope.timestamp_ms} is outside the "
+                     f"{ValiConfig.PEM_ENVELOPE_MAX_AGE_MS // 1000}s window. The trader must sign the order again")
+        else:
+            error = None
+        if error:
+            return jsonify({'success': False, 'error': error}), 400
+
+        try:
+            signal = Signal.model_validate(envelope.signal)
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Invalid signal data: {e}'}), 400
+
+        try:
+            result = self.order_placer.process_a_signal_for_rest(
+                order_uuid=envelope.miner_order_uuid,
+                signal=signal,
+                origin_payload=origin_payload,
+                origin_signature=origin_signature,
+            )
+        except Exception as e:
+            logger.error(f"[PEM] Error relaying order {envelope.miner_order_uuid} for {envelope.origin_hotkey}: {e}")
+            return jsonify({
+                'success': False,
+                'order_uuid': envelope.miner_order_uuid,
+                'error': f'Internal error processing order: {str(e)}'
+            }), 500
+
+        logger.info(f"[PEM] Relayed order {envelope.miner_order_uuid} for {envelope.origin_hotkey}: "
+                    f"success={result.get('success')}")
+        result = {**result, 'origin_hotkey': envelope.origin_hotkey, 'relay_hotkey': relay_hotkey}
+        return jsonify(result), 200 if result.get('success') else 400
 
     # ==================== HL Address Mapping ====================
 

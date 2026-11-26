@@ -13,8 +13,27 @@ from vanta_cli.src.options import EPILOG, Network, PromptFlag, WalletHotkey, Wal
 from vanta_cli.src.utils.api import make_api_request
 from vanta_cli.src.utils.console import console
 
+ENTITY_MINER_ROLE = "entity_miner"
+PERMISSIONLESS_ENTITY_MINER_ROLE = "permissionless_entity_miner"
+PEM_MIN_TAKE = 0.1  # mirrors ValiConfig.PEM_MIN_TAKE
+
 app = typer.Typer(no_args_is_help=True, help="Vanta Network - Entity management commands", epilog=EPILOG,
                   pretty_exceptions_show_locals=False)
+
+
+def registration_request(coldkey, hotkey_ss58: str, role: str = ENTITY_MINER_ROLE, take: Optional[float] = None) -> dict:
+    """The signed request the validator verifies. The default role is left out, so an entity_miner
+    registration signs the same message as before roles existed."""
+    registration_data = {
+        "entity_coldkey": coldkey.ss58_address,
+        "entity_hotkey": hotkey_ss58
+    }
+    if role != ENTITY_MINER_ROLE:
+        registration_data["role"] = role
+        registration_data["pem_take"] = take
+    message = json.dumps(registration_data, sort_keys=True)
+    signature = coldkey.sign(message.encode('utf-8')).hex()
+    return {**registration_data, "signature": signature}
 
 
 @app.command("register", rich_help_panel="Entity Management")
@@ -23,14 +42,37 @@ def register(
     wallet_path: WalletPath = None,
     wallet_hotkey: WalletHotkey = None,
     network: Network = "finney",
+    role: Annotated[str, typer.Option(
+        "--role", help="Role to register: entity_miner or permissionless_entity_miner. "
+                       "A registered entity adds the role, paying its own fee"
+    )] = ENTITY_MINER_ROLE,
+    take: Annotated[Optional[float], typer.Option(
+        "--take", help="Profit share of a permissionless entity miner, e.g. 0.1 for 10% (at least 0.1, below 1)"
+    )] = None,
     prompt: PromptFlag = True,
 ):
     """
-    Register a new entity on the Vanta Network
+    Register a new entity on the Vanta Network, or add a role to a registered entity
     """
+    if role not in (ENTITY_MINER_ROLE, PERMISSIONLESS_ENTITY_MINER_ROLE):
+        console.print(f"[red]--role must be {ENTITY_MINER_ROLE} or {PERMISSIONLESS_ENTITY_MINER_ROLE}[/red]")
+        return False
+    is_pem = role == PERMISSIONLESS_ENTITY_MINER_ROLE
+    if is_pem and take is None:
+        if not prompt:
+            console.print(f"[red]--take is required for the {PERMISSIONLESS_ENTITY_MINER_ROLE} role[/red]")
+            return False
+        take = FloatPrompt.ask("Profit share (e.g. 0.1 for 10%)")
+    if not is_pem and take is not None:
+        console.print(f"[red]--take only applies to the {PERMISSIONLESS_ENTITY_MINER_ROLE} role[/red]")
+        return False
+    if is_pem and not PEM_MIN_TAKE <= take < 1:
+        console.print(f"[red]--take must be at least {PEM_MIN_TAKE} and below 1[/red]")
+        return False
+
     wallet = wallet_ask(wallet_name, wallet_path, wallet_hotkey)
 
-    console.print("[blue]Registering entity on Vanta Network[/blue]")
+    console.print(f"[blue]Registering entity as {role} on Vanta Network[/blue]")
 
     # Determine base URL
     base_url = VANTA_API_BASE_URL_TESTNET if network == "test" else VANTA_API_BASE_URL_MAINNET
@@ -43,6 +85,9 @@ def register(
     config_table.add_column("Value", style="green")
 
     config_table.add_row("Network", "Testnet" if network == "test" else "Mainnet")
+    config_table.add_row("Role", role)
+    if is_pem:
+        config_table.add_row("Profit Share", f"{take:.0%}")
     config_table.add_row("Registration Fee", f"{registration_fee} Theta")
 
     console.print(config_table)
@@ -60,7 +105,7 @@ def register(
     # Step 3: Confirm registration
     if prompt:
         confirm = typer.confirm(
-            f"Register entity {hotkey.ss58_address} "
+            f"Register entity {hotkey.ss58_address} as {role} "
             f"(costs {registration_fee} Theta)?"
         )
         if not confirm:
@@ -69,9 +114,9 @@ def register(
 
     # Step 4: Ensure sufficient collateral
     response = make_api_request(f"/collateral/balance/{hotkey.ss58_address}", method="GET", base_url=base_url)
-    if not response or response.get("balance_theta") < registration_fee:
-        console.print(f"[red]Insufficient collateral for entity registration: {response.get('balance_theta')}[/red]")
-        return False
+    balance = response.get("balance_theta") if response else None
+    if balance is None or balance < registration_fee:
+        console.print(f"[yellow]Insufficient collateral for entity registration: {response.get('balance_theta')}[/yellow]")
 
 
     # collateral_success, collateral_msg = ensure_sufficient_collateral(
@@ -90,23 +135,7 @@ def register(
     # Step 5: Prepare and sign registration request
     console.print("\n[cyan]Signing entity registration request...[/cyan]")
 
-    registration_data = {
-        "entity_coldkey": coldkey.ss58_address,
-        "entity_hotkey": hotkey.ss58_address
-    }
-
-    # Create message to sign (sorted JSON)
-    message = json.dumps(registration_data, sort_keys=True)
-
-    # Sign the message with coldkey
-    signature = coldkey.sign(message.encode('utf-8')).hex()
-
-    # Prepare payload
-    payload = {
-        "entity_coldkey": coldkey.ss58_address,
-        "entity_hotkey": hotkey.ss58_address,
-        "signature": signature
-    }
+    payload = registration_request(coldkey, hotkey.ss58_address, role, take)
 
     # Step 6: Send registration request
     console.print("\n[cyan]Sending entity registration request...[/cyan]")
@@ -128,12 +157,24 @@ def register(
             success_table.add_column("Value", style="green")
 
             success_table.add_row("Entity Hotkey", response.get('entity_hotkey'))
-            success_table.add_row("Fee Charged", f"{registration_fee} Theta")
+            success_table.add_row("Role", role)
+            fee_waived = "fee waived" in (response.get("message") or "")
+            success_table.add_row("Fee Charged", "0 Theta" if fee_waived else f"{registration_fee} Theta")
+            if response.get("api_key"):
+                success_table.add_row("API Key", response["api_key"])
 
             console.print(success_table)
 
+            if is_pem:
+                next_steps = "You can now relay orders signed by your traders"
+            else:
+                next_steps = "You can now create subaccounts using 'vanta entity create-subaccount'"
             success_panel = Panel.fit(
-                f"🎉 Entity registration completed!\nYou can now create subaccounts using 'vanta entity create-subaccount'\nCreate your API key using 'vanta entity apikey'",
+                f"🎉 Entity registration completed!\n{next_steps}\n"
+                + ("Store the API key above as 'validator_api_key' in mining/miner_secrets.json.\n"
+                   "'vanta entity apikey' shows it again" if response.get("api_key")
+                   else "Create your API key using 'vanta entity apikey' and store it as 'validator_api_key'\n"
+                        "in mining/miner_secrets.json"),
                 style="bold green",
                 border_style="green"
             )
@@ -403,7 +444,7 @@ def apikey(
             console.print(result_table)
 
             console.print(Panel.fit(
-                "Store this API key as 'validator_api_key' in your entity miner secrets file.\n"
+                "Store this API key as 'validator_api_key' in mining/miner_secrets.json.\n"
                 "It grants tier-200 WebSocket access to your subaccount dashboards.",
                 style="bold green",
                 border_style="green"

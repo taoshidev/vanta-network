@@ -11,6 +11,7 @@ Follows the same pattern as ChallengePeriodServer.
 from typing import Optional, Tuple, Dict, List
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.entity_role_enum import EntityRole
 
 import template.protocol
 from entity_management.entity_manager import EntityManager
@@ -134,18 +135,22 @@ class EntityServer(RPCServerBase):
 
     def register_entity_rpc(
         self,
-        entity_hotkey: str
+        entity_hotkey: str,
+        role: str = EntityRole.ENTITY_MINER.value,
+        pem_take: Optional[float] = None
     ) -> Tuple[bool, str]:
         """
-        Register a new entity.
+        Register a new entity, or add a role to a registered one.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
+            role: EntityRole value to register
+            pem_take: Profit share, required for the permissionless_entity_miner role
 
         Returns:
             (success: bool, message: str)
         """
-        return self._manager.register_entity(entity_hotkey)
+        return self._manager.register_entity(entity_hotkey, role=role, pem_take=pem_take)
 
     def create_subaccount_rpc(
         self,
@@ -380,6 +385,22 @@ class EntityServer(RPCServerBase):
             (found: bool, status: Optional[str], synthetic_hotkey: str)
         """
         return self._manager.get_subaccount_status(synthetic_hotkey)
+
+    def get_entity_whitelist_rpc(self) -> Dict[str, dict]:
+        """Hotkeys whose registration fee is waived, per role."""
+        return self._manager.get_entity_whitelist()
+
+    def set_entity_whitelist_entry_rpc(self, hotkey: str, roles: List[str], note: Optional[str] = None) -> Tuple[bool, str]:
+        """Add a hotkey to the entity whitelist, or replace its entry."""
+        return self._manager.set_entity_whitelist_entry(hotkey, roles, note)
+
+    def remove_entity_whitelist_entry_rpc(self, hotkey: str) -> Tuple[bool, str]:
+        """Remove a hotkey from the entity whitelist."""
+        return self._manager.remove_entity_whitelist_entry(hotkey)
+
+    def is_permissionless_entity_miner_rpc(self, hotkey: str) -> bool:
+        """True if `hotkey` is a registered entity with the permissionless_entity_miner role."""
+        return self._manager.is_permissionless_entity_miner(hotkey)
 
     def get_entity_data_rpc(self, entity_hotkey: str) -> Optional[dict]:
         """

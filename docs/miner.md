@@ -95,6 +95,10 @@ A standard account is paid exactly what it is owed: its realized PnL above the a
 - A withdrawal that goes into the locked theta **closes the account for good**: every position must be closed first, all of the collateral comes out, and the locked theta is slashed by min(1, max(today's loss ÷ the daily loss limit, the drawdown ÷ the drawdown limit)) at the stage's limits, the drawdown being the one from the starting balance until the pro challenge and the one from the EOD high-water mark after. For example, down 2% today under a 3% limit and 4% below the starting balance under the 5% limit slashes 80% of the locked theta. `vanta collateral withdraw` shows this before asking you to confirm, the confirmation is signed with the request, and a closed hotkey can never trade again or be reopened. Payouts not yet received are forfeited.
 - An elimination for a daily loss, static drawdown or EOD drawdown breach slashes the whole locked theta. An elimination for inactivity (60 days without an order) or for a hotkey that left the metagraph slashes by the closing formula above, so with no drawdown everything comes back on withdrawal. Any other reason slashes the locked theta in proportion to the drawdown at elimination, as for every miner.
 
+### Trading through a permissionless entity miner
+
+A trader can also run a standard account through a permissionless entity miner (PEM): a venue with its own interface that creates the keys on the trader's device, prepares the registration, deposit and opening for the trader to sign, and relays the orders the trader signs to the validators. The account is the same standard account under the trader's own hotkey, with the rules above, and the network pays the trader directly. Orders placed through a PEM record it as `relay_hotkey`, for its profit share of the PnL made through it. See [Permissionless Entity Miners](entity_miner.md#permissionless-entity-miners).
+
 ## Market Hours and Order Types
 
 All times are US Eastern (ET).

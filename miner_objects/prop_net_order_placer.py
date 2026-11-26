@@ -389,7 +389,8 @@ class PropNetOrderPlacer:
 
         return result
 
-    def process_a_signal_for_rest(self, order_uuid: str, signal: Signal, subaccount_id: Optional[int] = None) -> dict:
+    def process_a_signal_for_rest(self, order_uuid: str, signal: Signal, subaccount_id: Optional[int] = None,
+                                  origin_payload: Optional[str] = None, origin_signature: Optional[str] = None) -> dict:
         """
         Process signal from REST API endpoint and send to validators.
 
@@ -401,6 +402,9 @@ class PropNetOrderPlacer:
             order_uuid: UUID for this order
             signal: Validated Signal object with trade_pair, order_type, leverage, etc.
             subaccount_id: Optional subaccount ID for entity miners
+            origin_payload: For a permissionless entity miner, the payload its trader signed, forwarded unchanged
+                (docs/pem_envelope.md). The validator takes the signal from it, so the synapse's signal is left empty
+            origin_signature: The trader's signature over origin_payload
 
         Returns:
             Dictionary with structure:
@@ -459,10 +463,12 @@ class PropNetOrderPlacer:
             signal_data = signal.model_dump(mode='json', exclude_none=True)
 
             send_signal_request = SendSignal(
-                signal=signal_data,
+                signal=signal_data if origin_payload is None else {},
                 miner_order_uuid=order_uuid,
                 repo_version=REPO_VERSION,
                 subaccount_id=subaccount_id,
+                origin_payload=origin_payload,
+                origin_signature=origin_signature,
                 successfully_processed=False,
                 error_message="",
                 should_retry=True,

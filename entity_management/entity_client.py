@@ -26,6 +26,7 @@ Usage:
 from typing import Optional, Tuple, Dict, List
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.entity_role_enum import EntityRole
 
 from template.protocol import SubaccountRegistration, EntityEndpointUpdate
 from shared_objects.rpc.rpc_client_base import RPCClientBase
@@ -76,20 +77,24 @@ class EntityClient(RPCClientBase):
 
     def register_entity(
         self,
-        entity_hotkey: str
+        entity_hotkey: str,
+        role: str = EntityRole.ENTITY_MINER.value,
+        pem_take: Optional[float] = None
     ) -> Tuple[bool, str]:
         """
-        Register a new entity.
+        Register a new entity, or add a role to a registered one.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
+            role: EntityRole value to register
+            pem_take: Profit share, required for the permissionless_entity_miner role
 
         Returns:
             (success: bool, message: str)
         """
         # Chain timeout: slashes the registration fee on-chain, which legitimately exceeds the 60s
         # default. Keeps the auto-retry: the manager checks "already registered" before slashing.
-        return self._invoke_rpc("register_entity_rpc", args=(entity_hotkey,),
+        return self._invoke_rpc("register_entity_rpc", args=(entity_hotkey, role, pem_take),
                                 timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def create_subaccount(
@@ -353,6 +358,22 @@ class EntityClient(RPCClientBase):
             (found: bool, status: Optional[str], synthetic_hotkey: str)
         """
         return self._server.get_subaccount_status_rpc(synthetic_hotkey)
+
+    def get_entity_whitelist(self) -> Dict[str, dict]:
+        """Hotkeys whose registration fee is waived: {hotkey: {"roles": [...], "note": str, "added_at_ms": int}}."""
+        return self._server.get_entity_whitelist_rpc()
+
+    def set_entity_whitelist_entry(self, hotkey: str, roles: List[str], note: Optional[str] = None) -> Tuple[bool, str]:
+        """Add a hotkey to the entity whitelist, or replace its entry. Mothership only."""
+        return self._server.set_entity_whitelist_entry_rpc(hotkey, roles, note)
+
+    def remove_entity_whitelist_entry(self, hotkey: str) -> Tuple[bool, str]:
+        """Remove a hotkey from the entity whitelist. Mothership only."""
+        return self._server.remove_entity_whitelist_entry_rpc(hotkey)
+
+    def is_permissionless_entity_miner(self, hotkey: str) -> bool:
+        """True if `hotkey` is a registered entity with the permissionless_entity_miner role."""
+        return self._server.is_permissionless_entity_miner_rpc(hotkey)
 
     def get_entity_data(self, entity_hotkey: str) -> Optional[dict]:
         """

@@ -64,6 +64,7 @@ class MarketOrderServer(RPCServerBase):
         is_hl_taker=None,
         now_ms=None,
         enforce_cooldown=True,
+        relay_hotkey=None,
     ):
         from vali_objects.enums.order_source_enum import OrderSource
         if order_src is None:
@@ -84,14 +85,16 @@ class MarketOrderServer(RPCServerBase):
             is_hl_taker=is_hl_taker,
             now_ms=now_ms,
             enforce_cooldown=enforce_cooldown,
+            relay_hotkey=relay_hotkey,
         )
 
-    def close_positions_rpc(self, hotkey, position_uuids=None, close_all=False, now_ms=None):
+    def close_positions_rpc(self, hotkey, position_uuids=None, close_all=False, now_ms=None, relay_hotkey=None):
         return self._manager.close_positions(
             hotkey=hotkey,
             position_uuids=position_uuids,
             close_all=close_all,
             now_ms=now_ms,
+            relay_hotkey=relay_hotkey,
         )
 
     def clear_order_cooldown_cache_rpc(self):

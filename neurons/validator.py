@@ -2,6 +2,7 @@
 # Copyright (c) 2024 Yuma Rao
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
+import hashlib
 import os
 import sys
 import threading
@@ -22,6 +23,8 @@ from typing import Tuple
 from setproctitle import setproctitle
 from neurons.validator_base import ValidatorBase
 from template.protocol import SendSignal
+from vali_objects.vali_config import ValiConfig
+from shared_objects.pem_envelope import EnvelopeError, verify_envelope
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
 from vali_objects.data_sync.order_sync_state import OrderSyncState
@@ -632,12 +635,73 @@ class Validator(ValidatorBase):
             synapse.should_retry = False
             return synapse
 
+        relay_hotkey = None
+        envelope_claim = None
+        if synapse.origin_payload is not None or synapse.origin_signature is not None:
+            # A permissionless entity miner relaying an order its trader signed (docs/pem_envelope.md). The order
+            # is processed as the trader's and records the relay. Checked before the rate limit, so a relay can't
+            # spend a trader's limit with orders the trader never signed.
+            envelope = None
+            error_message = None
+            if subaccount_id is not None:
+                error_message = "A relayed trader order cannot carry a subaccount_id"
+            else:
+                try:
+                    envelope = verify_envelope(synapse.origin_payload, synapse.origin_signature)
+                except EnvelopeError as e:
+                    error_message = f"Invalid order envelope: {e}"
+            if error_message is None:
+                if envelope.relay_hotkey != miner_hotkey:
+                    error_message = f"The envelope's relay_hotkey {envelope.relay_hotkey} is not the sender {miner_hotkey}"
+                elif envelope.netuid != self.config.netuid:
+                    error_message = f"The envelope is for netuid {envelope.netuid}, not {self.config.netuid}"
+                elif not (now_ms - ValiConfig.PEM_ENVELOPE_MAX_AGE_MS <= envelope.timestamp_ms
+                          <= now_ms + ValiConfig.PEM_ENVELOPE_MAX_FUTURE_MS):
+                    error_message = (f"The envelope's timestamp_ms {envelope.timestamp_ms} is outside the "
+                                     f"{ValiConfig.PEM_ENVELOPE_MAX_AGE_MS // 1000}s window. The trader must sign the order again")
+                elif signal_dict and signal_dict != envelope.signal:
+                    error_message = "The synapse signal differs from the envelope's signal"
+                else:
+                    if self.subtensor_ops_manager is not None:
+                        origin_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(envelope.origin_hotkey)
+                    else:
+                        with self._blacklist_cache_lock:
+                            origin_registered = envelope.origin_hotkey in self._blacklist_hotkeys
+                    if not origin_registered:
+                        error_message = f"The trader {envelope.origin_hotkey} is not registered on netuid {self.config.netuid}"
+            if error_message is None:
+                try:
+                    is_relay = self.entity_client.is_permissionless_entity_miner(miner_hotkey)
+                except Exception as e:
+                    synapse.successfully_processed = False
+                    synapse.should_retry = ErrorUtils.is_transient_rpc_error(e)
+                    synapse.error_message = f"Could not check the relay {miner_hotkey}. Please try again shortly."
+                    logger.error(f"Relay check failed for {miner_hotkey}: {e}")
+                    return synapse
+                if not is_relay:
+                    error_message = f"{miner_hotkey} is not registered as a permissionless_entity_miner"
+            if error_message is not None:
+                synapse.successfully_processed = False
+                synapse.should_retry = False
+                synapse.error_message = error_message
+                logger.info(f"Rejected relayed order from {miner_hotkey}: {error_message}")
+                return synapse
+
+            relay_hotkey = miner_hotkey
+            miner_hotkey = envelope.origin_hotkey
+            signal_dict = envelope.signal
+            order_uuid = envelope.miner_order_uuid
+            # One use per signed payload, for every execution type: LIMIT_CANCEL, LIMIT_EDIT and FLAT_ALL name
+            # their target in order_uuid, so the uuid alone can't tell a replay from a new instruction
+            envelope_claim = "envelope:" + hashlib.sha256(synapse.origin_payload.encode("utf-8")).hexdigest()
+
         # For entity miners: construct synthetic hotkey if subaccount_id provided
-        if subaccount_id is not None:
+        elif subaccount_id is not None:
             synthetic_hotkey = f"{miner_hotkey}_{subaccount_id}"
             miner_hotkey = synthetic_hotkey  # Use synthetic hotkey for all downstream ops
 
-        logger.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
+        logger.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] "
+                    f"{f'relayed by [{relay_hotkey}] ' if relay_hotkey else ''}using repo version [{miner_repo_version}].")
 
         if self.should_reject_synapse(miner_hotkey, synapse, SynapseMethod.SIGNAL):
             logger.info(f"Order rejected for {miner_hotkey}: {synapse.error_message}")
@@ -701,9 +765,19 @@ class Validator(ValidatorBase):
             # error message to send back to miners in case of a problem so they can fix and resend
             error_message = ""
             order_exc = None
+            # A relayed order's signed payload is claimed the same way: confirmed once applied, released if the
+            # apply fails so the relay's retry of the same payload can re-claim it.
+            if envelope_claim is not None and not self.uuid_tracker.check_and_add(envelope_claim):
+                synapse.successfully_processed = False
+                synapse.should_retry = False
+                synapse.error_message = "This signed order has already been received. The trader must sign a new order."
+                logger.error(f"{synapse.error_message} {miner_hotkey} relayed by {relay_hotkey}")
+                return synapse
             # Claim the uuid BEFORE applying so a duplicate can't double-apply; released below if the
             # apply fails (so a transient-error retry can re-claim) or the result is non-trackable.
             if should_dedup and not self.uuid_tracker.check_and_add(order_uuid):
+                if envelope_claim is not None:
+                    self.uuid_tracker.release(envelope_claim)
                 synapse.successfully_processed = False
                 synapse.should_retry = False
                 synapse.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
@@ -716,7 +790,10 @@ class Validator(ValidatorBase):
                     signal=signal,
                     order_uuid=order_uuid,
                     now_ms=now_ms,
+                    relay_hotkey=relay_hotkey,
                 )
+                if envelope_claim is not None:
+                    self.uuid_tracker.confirm(envelope_claim)
 
                 # Set synapse response (centralized - single line instead of 4)
                 synapse.order_json = result.get_response_json()
@@ -742,6 +819,8 @@ class Validator(ValidatorBase):
                 if claimed:
                     self.uuid_tracker.release(order_uuid)
                     claimed = False
+                if envelope_claim is not None:
+                    self.uuid_tracker.release(envelope_claim)
                 logger.error(f"Error processing signal {miner_hotkey} {order_uuid} {e}")
 
             finally:

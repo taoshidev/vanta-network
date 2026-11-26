@@ -102,6 +102,7 @@ those that provide the most returns, while never exceeding certain drawdown limi
 5. There is a slippage assessed per order. The slippage cost is is greater for orders with higher leverages, and in assets with lower liquidity.
 6. Miners are rewarded using a debt-based scoring system that tracks their emissions, performance, and penalties. Weights are set based on the previous week's performance (PnL scaled by penalties), with payout periods starting and ending at midnight UTC on Sunday <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md">More info</a>
 7. Miners whose hotkey registered after 2026-11-14 00:00 UTC trade on the standard account track: an account sized once from their collateral, the same challenge and funded stages as an entity subaccount, and a weight that pays what they are owed and no share of the surplus <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md#standard-account-track">More info</a>
+8. Traders can also trade through a permissionless entity miner: a venue anyone can run, which onboards traders with their own hotkeys and relays the orders they sign, for a profit share of at least 10% of what its traders make through it <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/entity_miner.md#permissionless-entity-miners">More info</a>
 
 With this system only the world's best traders & deep learning / quant based trading systems can compete.
 

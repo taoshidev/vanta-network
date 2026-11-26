@@ -2,6 +2,7 @@ import hashlib
 import math
 import re
 import secrets
+import threading
 from string import hexdigits
 
 from typing import Optional
@@ -75,6 +76,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
+from vali_objects.enums.entity_role_enum import EntityRole
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.fee_event import FeeType
 from vali_objects.vali_dataclasses.order import Order
@@ -103,6 +105,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     service_name = ValiConfig.RPC_REST_SERVER_SERVICE_NAME
     service_port = ValiConfig.RPC_REST_SERVER_PORT
+
+    # Serializes issuing entity API keys (read api_keys.json, add a key, write it back), so concurrent requests for
+    # one entity, from /entity/register and /request-api-key, get the same key rather than each writing its own
+    _entity_api_key_lock = threading.Lock()
 
     def __init__(self, api_keys_file, refresh_interval=15,
                  metrics_interval_minutes=5, running_unit_tests=False,
@@ -378,6 +384,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/settled-segment/<hotkey>", methods=["GET"])(self.get_settled_segments)
         self.app.route("/admin/settled-segment/<hotkey>", methods=["POST"])(self.correct_settled_segment)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
+        self.app.route("/admin/entity-whitelist", methods=["GET"])(self.get_entity_whitelist)
+        self.app.route("/admin/entity-whitelist", methods=["POST"])(self.set_entity_whitelist_entry)
+        self.app.route("/admin/entity-whitelist/<hotkey>", methods=["DELETE"])(self.remove_entity_whitelist_entry)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
@@ -2643,7 +2652,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     def register_entity(self):
         """
-        Register a new entity.
+        Register a new entity, or add a role to a registered entity. Each role costs its own
+        registration fee, slashed from the entity's collateral.
 
         Example:
         curl -X POST http://localhost:48888/entity/register \\
@@ -2651,9 +2661,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           -d '{
             "entity_hotkey": "5GhDr...",
             "entity_coldkey": "5FxY...",
-            "max_subaccounts": 500,
+            "role": "permissionless_entity_miner",
+            "pem_take": 0.1,
             "signature": "0x..."
           }'
+
+        role is an EntityRole value and defaults to entity_miner when omitted. pem_take, the profit
+        share of a permissionless entity miner (at least ValiConfig.PEM_MIN_TAKE, below 1), is required
+        for that role and refused for entity_miner. The signature is the coldkey's over the sorted JSON of
+        entity_coldkey, entity_hotkey, and role and pem_take when the request carries them.
+
+        A success carries the entity's tier 200 API key as api_key, the one POST /request-api-key returns (the
+        same key on every call). If the key could not be issued, api_key is null, api_key_error says so, and the
+        registration still stands.
         """
         # Check if entity client is available
         if not self._entity_client:
@@ -2686,13 +2706,31 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             entity_coldkey = data['entity_coldkey']
             entity_hotkey = data['entity_hotkey']
+            role = data.get('role', EntityRole.ENTITY_MINER.value)
+            pem_take = data.get('pem_take')
 
-            # Verify signature
-            keypair = Keypair(ss58_address=entity_coldkey)
-            message = json.dumps({
+            if not EntityRole.is_valid(role):
+                return jsonify({'error': f'role must be one of {[r.value for r in EntityRole]}'}), 400
+            if role == EntityRole.PERMISSIONLESS_ENTITY_MINER.value:
+                if pem_take is None:
+                    return jsonify({'error': f'pem_take is required for the {role} role'}), 400
+                if isinstance(pem_take, bool) or not isinstance(pem_take, (int, float)):
+                    return jsonify({'error': 'pem_take must be a number'}), 400
+            elif pem_take is not None:
+                return jsonify({'error': f'pem_take only applies to the {EntityRole.PERMISSIONLESS_ENTITY_MINER.value} role'}), 400
+
+            # Verify signature. role and pem_take are signed only when sent, so a request without them
+            # verifies against the same message as before roles existed
+            signed_fields = {
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey
-            }, sort_keys=True).encode('utf-8')
+            }
+            if 'role' in data:
+                signed_fields['role'] = role
+            if 'pem_take' in data:
+                signed_fields['pem_take'] = pem_take
+            keypair = Keypair(ss58_address=entity_coldkey)
+            message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
             if not is_valid:
@@ -2705,17 +2743,45 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Register entity via RPC
             success, message = self._entity_client.register_entity(
-                entity_hotkey=entity_hotkey
+                entity_hotkey=entity_hotkey,
+                role=role,
+                pem_take=pem_take
             )
 
-            if success:
-                return jsonify({
-                    'status': 'success',
-                    'message': message,
-                    'entity_hotkey': entity_hotkey
-                }), 200
-            else:
+            if not success:
                 return jsonify({'error': message}), 400
+
+            # The entity's API key (as /request-api-key issues it), so the caller needs no second request. The role
+            # is registered and its fee slashed by now, so a failure here still answers success, with no key
+            response = {
+                'status': 'success',
+                'message': message,
+                'entity_hotkey': entity_hotkey,
+                'role': role,
+                'api_key': None
+            }
+            try:
+                with self._entity_api_key_lock:
+                    api_key = next((k for k, v in self.api_key_to_alias.items() if v == entity_hotkey), None)
+                    if api_key is None:
+                        try:
+                            existing_data = json.loads(ValiBkpUtils.get_file(self.api_keys_file))
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            existing_data = {}
+                        # Written by a request in the last refresh interval, not yet in api_key_to_alias
+                        api_key = existing_data.get(entity_hotkey, {}).get('key')
+                        if api_key is None:
+                            api_key = secrets.token_urlsafe(32)
+                            existing_data[entity_hotkey] = {
+                                "key": api_key,
+                                "tier": ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER
+                            }
+                            ValiBkpUtils.write_file(self.api_keys_file, existing_data)
+                response['api_key'] = api_key
+            except Exception as e:
+                logger.error(f"Entity {entity_hotkey} registered, but issuing its API key failed: {e}")
+                response['api_key_error'] = 'The API key could not be issued. Request it with POST /request-api-key'
+            return jsonify(response), 200
 
         except Exception as e:
             logger.error(f"Error registering entity: {e}")
@@ -2776,27 +2842,32 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if entity_data is None:
                 return jsonify({'error': f'Entity {entity_hotkey} is not registered'}), 404
 
-            # Idempotent: return existing key if already issued for this entity
-            existing_key = next(
-                (k for k, v in self.api_key_to_alias.items() if v == entity_hotkey),
-                None
-            )
-            if existing_key:
-                return jsonify({'api_key': existing_key}), 200
+            # Idempotent: return existing key if already issued for this entity. Under the lock, and checking the
+            # file as well as api_key_to_alias (refreshed every few seconds), so concurrent requests get one key
+            with self._entity_api_key_lock:
+                existing_key = next(
+                    (k for k, v in self.api_key_to_alias.items() if v == entity_hotkey),
+                    None
+                )
+                if existing_key:
+                    return jsonify({'api_key': existing_key}), 200
 
-            # Generate new API key and persist to api_keys.json
-            new_api_key = secrets.token_urlsafe(32)
+                try:
+                    existing_data = json.loads(ValiBkpUtils.get_file(self.api_keys_file))
+                except (FileNotFoundError, json.JSONDecodeError):
+                    existing_data = {}
 
-            try:
-                existing_data = json.loads(ValiBkpUtils.get_file(self.api_keys_file))
-            except (FileNotFoundError, json.JSONDecodeError):
-                existing_data = {}
+                existing_key = existing_data.get(entity_hotkey, {}).get('key')
+                if existing_key:
+                    return jsonify({'api_key': existing_key}), 200
 
-            existing_data[entity_hotkey] = {
-                "key": new_api_key,
-                "tier": ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER
-            }
-            ValiBkpUtils.write_file(self.api_keys_file, existing_data)
+                # Generate new API key and persist to api_keys.json
+                new_api_key = secrets.token_urlsafe(32)
+                existing_data[entity_hotkey] = {
+                    "key": new_api_key,
+                    "tier": ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER
+                }
+                ValiBkpUtils.write_file(self.api_keys_file, existing_data)
 
             return jsonify({'api_key': new_api_key}), 200
 
@@ -3656,6 +3727,86 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error correcting settled segment for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def get_entity_whitelist(self):
+        """
+        List the entity whitelist: hotkeys that register the listed roles without the registration fee.
+        Kept by the mothership only. Requires tier 500 access.
+
+        Example:
+        curl "http://localhost:48888/admin/entity-whitelist" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Entity whitelist endpoint requires tier 500 access'}), 403
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+        try:
+            return jsonify({'status': 'success', 'whitelist': self._entity_client.get_entity_whitelist()}), 200
+        except Exception as e:
+            logger.error(f"Error reading entity whitelist: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_entity_whitelist_entry(self):
+        """
+        Add a hotkey to the entity whitelist, or replace its entry. Entity registration then waives the
+        registration fee, and the collateral it would need, for each role listed. Removing or changing an
+        entry does not affect roles already registered. Mothership only. Requires tier 500 access.
+
+        JSON body:
+          hotkey: the entity hotkey (SS58)
+          roles: list of EntityRole values, e.g. ["permissionless_entity_miner"]
+          note: optional, at most 256 characters (who the affiliate is, why)
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/entity-whitelist" \\
+          -H "Authorization: Bearer YOUR_API_KEY" -H "Content-Type: application/json" \\
+          -d '{"hotkey": "5GhDr...", "roles": ["permissionless_entity_miner"], "note": "Acme Exchange"}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Entity whitelist endpoint requires tier 500 access'}), 403
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or 'hotkey' not in data or 'roles' not in data:
+            return jsonify({'error': 'Body must be a JSON object with hotkey and roles'}), 400
+        try:
+            success, message = self._entity_client.set_entity_whitelist_entry(data['hotkey'], data['roles'], data.get('note'))
+        except Exception as e:
+            logger.error(f"Error updating entity whitelist: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        if not success:
+            return jsonify({'error': message}), 400
+        return jsonify({'status': 'success', 'message': message}), 200
+
+    def remove_entity_whitelist_entry(self, hotkey: str):
+        """
+        Remove a hotkey from the entity whitelist. Roles it already registered are kept. Mothership only.
+        Requires tier 500 access.
+
+        Example:
+        curl -X DELETE "http://localhost:48888/admin/entity-whitelist/<hotkey>" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Entity whitelist endpoint requires tier 500 access'}), 403
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+        try:
+            success, message = self._entity_client.remove_entity_whitelist_entry(hotkey)
+        except Exception as e:
+            logger.error(f"Error updating entity whitelist: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        if not success:
+            return jsonify({'error': message}), 404 if 'not on the entity whitelist' in message else 400
+        return jsonify({'status': 'success', 'message': message}), 200
 
     def eliminate_hotkey(self, hotkey: str):
         """

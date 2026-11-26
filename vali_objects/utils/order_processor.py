@@ -184,18 +184,22 @@ class OrderProcessor:
         signal: Signal,
         order_uuid: str,
         now_ms: int,
+        relay_hotkey: Optional[str] = None,
     ) -> OrderProcessingResult:
+        """relay_hotkey is the permissionless entity miner that relayed a trader's order, recorded on every
+        order this signal creates (and on the fills and brackets that later come from them)."""
         order_uuid = order_uuid or str(uuid.uuid4())
         execution_type = signal.execution_type
 
         if execution_type == ExecutionType.MARKET:
-            return self.process_market_order(hotkey, signal, order_uuid, now_ms)
+            return self.process_market_order(hotkey, signal, order_uuid, now_ms, relay_hotkey)
 
         elif execution_type == ExecutionType.FLAT_ALL:
-            return self.process_flat_all(hotkey, order_uuid, now_ms)
+            return self.process_flat_all(hotkey, order_uuid, now_ms, relay_hotkey)
 
         elif execution_type in (ExecutionType.LIMIT, ExecutionType.BRACKET, ExecutionType.STOP_LIMIT):
-            order = self.process_unfilled_order(hotkey, signal, order_uuid, now_ms, execution_type)
+            order = self.process_unfilled_order(hotkey, signal, order_uuid, now_ms, execution_type,
+                                                relay_hotkey=relay_hotkey)
             return OrderProcessingResult(execution_type=execution_type, order=order, should_track_uuid=True)
 
         elif execution_type == ExecutionType.LIMIT_CANCEL:
@@ -203,7 +207,7 @@ class OrderProcessor:
             return OrderProcessingResult(execution_type=ExecutionType.LIMIT_CANCEL, result_dict=result, should_track_uuid=False)
 
         elif execution_type == ExecutionType.LIMIT_EDIT:
-            order = self.process_limit_edit(hotkey, signal, order_uuid, now_ms)
+            order = self.process_limit_edit(hotkey, signal, order_uuid, now_ms, relay_hotkey)
             return OrderProcessingResult(execution_type=ExecutionType.LIMIT_EDIT, order=order, should_track_uuid=False)
 
         else:
@@ -215,6 +219,7 @@ class OrderProcessor:
         signal: Signal,
         order_uuid: str,
         now_ms: int,
+        relay_hotkey: Optional[str] = None,
     ) -> OrderProcessingResult:
         order_size = OrderSize(leverage=signal.leverage, value=signal.value, quantity=signal.quantity)
         trade_pair = _validate_required(signal.trade_pair, TradePair)
@@ -229,6 +234,7 @@ class OrderProcessor:
             order_src=OrderSource.ORGANIC,
             now_ms=now_ms,
             enforce_cooldown=True,
+            relay_hotkey=relay_hotkey,
         )
         if result is None:
             return OrderProcessingResult(ExecutionType.MARKET)
@@ -265,6 +271,7 @@ class OrderProcessor:
         hotkey: str,
         order_uuid: str,
         now_ms: int,
+        relay_hotkey: Optional[str] = None,
     ) -> OrderProcessingResult:
         close_all = bool(order_uuid and order_uuid.strip().upper() == "ALL")
         position_uuids = None if close_all else [u.strip() for u in order_uuid.split(',')] if order_uuid else []
@@ -273,6 +280,7 @@ class OrderProcessor:
             position_uuids=position_uuids,
             close_all=close_all,
             now_ms=now_ms,
+            relay_hotkey=relay_hotkey,
         )
         # Post-commit: positions are closed above; a failed bracket sweep must not turn the
         # committed close into an "apply failed" resend (see process_market_order).
@@ -333,6 +341,7 @@ class OrderProcessor:
         now_ms: int,
         execution_type: ExecutionType,
         is_edit: bool = False,
+        relay_hotkey: Optional[str] = None,
     ) -> Order:
         if execution_type == ExecutionType.BRACKET:
             # Default bracket_pct=1.0 when no explicit size is provided.
@@ -365,6 +374,7 @@ class OrderProcessor:
             bracket_orders=signal.bracket_orders,
             bracket_pct=signal.bracket_pct,
             src=order_src,
+            relay_hotkey=relay_hotkey,
         )
         if execution_type == ExecutionType.BRACKET:
             # BRACKET orders never carry a limit_price.
@@ -401,7 +411,9 @@ class OrderProcessor:
         signal: Signal,
         order_uuid: str,
         now_ms: int,
+        relay_hotkey: Optional[str] = None,
     ) -> Optional[Order]:
+        """The edited order is recorded as relayed by whoever relayed the edit, the trader's latest instruction."""
         existing_order_dict = self.limit_order_client.get_limit_order_by_uuid(hotkey, order_uuid)
 
         # If the envelope uuid is also listed in bracket_orders, defer to the
@@ -424,16 +436,17 @@ class OrderProcessor:
             # Execution type cannot be mutated via edit; preserve the existing one.
             edit_signal = signal.model_copy(update={"execution_type": existing_order.execution_type})
             return self.process_unfilled_order(
-                hotkey, edit_signal, order_uuid, now_ms, existing_order.execution_type, is_edit=True
+                hotkey, edit_signal, order_uuid, now_ms, existing_order.execution_type, is_edit=True,
+                relay_hotkey=relay_hotkey
             )
 
         if signal.bracket_orders:
-            return self._apply_bulk_bracket_update(hotkey, signal, now_ms)
+            return self._apply_bulk_bracket_update(hotkey, signal, now_ms, relay_hotkey)
 
         raise SignalException(f"Cannot edit order {order_uuid}: order not found")
 
     def _apply_bulk_bracket_update(
-        self, hotkey: str, signal: Signal, now_ms: int
+        self, hotkey: str, signal: Signal, now_ms: int, relay_hotkey: Optional[str] = None
     ) -> Optional[Order]:
         trade_pair = _validate_required(signal.trade_pair, TradePair)
         processed_orders: list[Order] = []
@@ -458,7 +471,7 @@ class OrderProcessor:
             bracket_signal = self._build_bracket_signal(trade_pair, bracket)
             order = self.process_unfilled_order(
                 hotkey, bracket_signal, bracket_uuid, now_ms,
-                ExecutionType.BRACKET, is_edit=bool(existing_bracket),
+                ExecutionType.BRACKET, is_edit=bool(existing_bracket), relay_hotkey=relay_hotkey,
             )
             processed_orders.append(order)
 

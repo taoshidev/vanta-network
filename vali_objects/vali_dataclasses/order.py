@@ -30,6 +30,9 @@ class Order(Signal):
     margin_loan: float = 0.0
     # Liquidity flag. None=unknown (priced as taker), True=taker, False=maker.
     is_hl_taker: OptionalType[bool] = None
+    # Permissionless entity miner that relayed the trader's order (docs/pem_envelope.md). None for an order the
+    # miner sent itself, and for orders the validator generates (elimination and deprecation closes, corrections)
+    relay_hotkey: OptionalType[str] = None
 
     @field_validator('trade_pair', mode='before')
     @classmethod
@@ -201,6 +204,7 @@ class Order(Signal):
             'order_uuid': self.order_uuid,
             'src': self.src,
             'is_hl_taker': self.is_hl_taker,
+            'relay_hotkey': self.relay_hotkey,
             'execution_type': self.execution_type.name if self.execution_type else None,
             'realized_pnl': self.realized_pnl,
             'limit_price': self.limit_price,

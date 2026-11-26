@@ -81,6 +81,7 @@ class MarketOrderManager():
         is_hl_taker: bool | None = None,
         now_ms: int | None = None,
         enforce_cooldown: bool = True,
+        relay_hotkey: str | None = None,
     ) -> tuple[Order, Position] | None:
         _start = TimeUtil.now_in_millis()
         now_ms = now_ms or _start
@@ -171,7 +172,7 @@ class MarketOrderManager():
                 execution_type, order_type, order_size,
                 order_uuid, now_ms, price_sources, order_src,
                 fill_price, usd_base_rate, quote_usd_rate,
-                slippage, is_hl_taker, trigger_price,
+                slippage, is_hl_taker, trigger_price, relay_hotkey,
             )
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
             return OrderExecution(order, position, binding_cap)
@@ -229,6 +230,7 @@ class MarketOrderManager():
         slippage: float | None = None,
         is_hl_taker: bool | None = None,
         trigger_price: float | None = None,
+        relay_hotkey: str | None = None,
     ) -> Order:
         """Build and execute an order. Caller must hold the position lock."""
         trade_pair = position.trade_pair
@@ -319,6 +321,7 @@ class MarketOrderManager():
             usd_base_rate=usd_base_rate,
             quote_usd_rate=quote_usd_rate,
             is_hl_taker=is_hl_taker,
+            relay_hotkey=relay_hotkey,
         )
 
         if slippage is None:
@@ -369,7 +372,8 @@ class MarketOrderManager():
 
         return order, binding_cap
 
-    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
+    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None,
+                        relay_hotkey: str | None = None):
         logger.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")
 
         open_positions = self._position_client.get_positions_for_hotkeys([hotkey], only_open_positions=True).get(hotkey)
@@ -404,6 +408,7 @@ class MarketOrderManager():
                     order_size=OrderSize(),
                     now_ms=now_ms,
                     enforce_cooldown=False,
+                    relay_hotkey=relay_hotkey,
                 )
                 cnt_closed += 1
 
