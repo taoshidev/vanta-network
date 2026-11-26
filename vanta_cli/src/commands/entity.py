@@ -158,7 +158,8 @@ def register(
 
             success_table.add_row("Entity Hotkey", response.get('entity_hotkey'))
             success_table.add_row("Role", role)
-            success_table.add_row("Fee Charged", f"{registration_fee} Theta")
+            fee_waived = "fee waived" in (response.get("message") or "")
+            success_table.add_row("Fee Charged", "0 Theta" if fee_waived else f"{registration_fee} Theta")
             if response.get("api_key"):
                 success_table.add_row("API Key", response["api_key"])
 
@@ -170,8 +171,10 @@ def register(
                 next_steps = "You can now create subaccounts using 'vanta entity create-subaccount'"
             success_panel = Panel.fit(
                 f"🎉 Entity registration completed!\n{next_steps}\n"
-                + ("Store your API key above; 'vanta entity apikey' shows it again" if response.get("api_key")
-                   else "Create your API key using 'vanta entity apikey'"),
+                + ("Store the API key above as 'validator_api_key' in mining/miner_secrets.json.\n"
+                   "'vanta entity apikey' shows it again" if response.get("api_key")
+                   else "Create your API key using 'vanta entity apikey' and store it as 'validator_api_key'\n"
+                        "in mining/miner_secrets.json"),
                 style="bold green",
                 border_style="green"
             )
@@ -441,7 +444,7 @@ def apikey(
             console.print(result_table)
 
             console.print(Panel.fit(
-                "Store this API key as 'validator_api_key' in your entity miner secrets file.\n"
+                "Store this API key as 'validator_api_key' in mining/miner_secrets.json.\n"
                 "It grants tier-200 WebSocket access to your subaccount dashboards.",
                 style="bold green",
                 border_style="green"
