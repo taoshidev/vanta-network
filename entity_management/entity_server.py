@@ -386,6 +386,18 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.get_subaccount_status(synthetic_hotkey)
 
+    def get_entity_whitelist_rpc(self) -> Dict[str, dict]:
+        """Hotkeys whose registration fee is waived, per role."""
+        return self._manager.get_entity_whitelist()
+
+    def set_entity_whitelist_entry_rpc(self, hotkey: str, roles: List[str], note: Optional[str] = None) -> Tuple[bool, str]:
+        """Add a hotkey to the entity whitelist, or replace its entry."""
+        return self._manager.set_entity_whitelist_entry(hotkey, roles, note)
+
+    def remove_entity_whitelist_entry_rpc(self, hotkey: str) -> Tuple[bool, str]:
+        """Remove a hotkey from the entity whitelist."""
+        return self._manager.remove_entity_whitelist_entry(hotkey)
+
     def is_permissionless_entity_miner_rpc(self, hotkey: str) -> bool:
         """True if `hotkey` is a registered entity with the permissionless_entity_miner role."""
         return self._manager.is_permissionless_entity_miner(hotkey)

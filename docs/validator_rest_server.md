@@ -1188,7 +1188,42 @@ Register a new entity, or add a role to a registered entity. An entity registers
 
 A new entity counts toward `ValiConfig.MAX_REGISTERED_ENTITIES` (10) and must not already be a miner. A registered entity adding the other role does not count again. Errors: 400 for an invalid `role` or `pem_take`, a role the entity already holds, the entity cap, a hotkey already used as a miner, insufficient collateral, or a request that reached a validator other than the mothership; 401 for a bad signature; 403 when the coldkey does not own the hotkey.
 
-The registration's roles appear in `GET /entity/<entity_hotkey>` as `roles`, with `pem_take` and `pem_registered_at_ms` for a permissionless entity miner.
+The registration's roles appear in `GET /entity/<entity_hotkey>` as `roles`, with `pem_take` and `pem_registered_at_ms` for a permissionless entity miner, and `fee_waived_roles` for the roles registered without the fee.
+
+A hotkey on the [entity whitelist](#entity-whitelist-admin) registers its listed roles without the fee and without holding collateral; the response message then reads `registration fee waived (whitelisted)`. Every other check still applies.
+
+### Entity Whitelist (admin)
+
+Hotkeys whose registration fee is waived, for the roles listed, so pre-vetted affiliates can register as permissionless entity miners for free. Kept by the mothership in `validation/entity_whitelist.json` and not broadcast: only the mothership registers entities. Removing or changing an entry does not affect roles already registered. All three endpoints require **tier 500** access.
+
+`GET /admin/entity-whitelist`
+
+```json
+{
+  "status": "success",
+  "whitelist": {
+    "5GhDr3xy...abc": {"roles": ["permissionless_entity_miner"], "note": "Acme Exchange", "added_at_ms": 1795000000000}
+  }
+}
+```
+
+`POST /admin/entity-whitelist` adds a hotkey, or replaces its entry:
+
+```json
+{
+  "hotkey": "5GhDr3xy...abc",
+  "roles": ["permissionless_entity_miner"],
+  "note": "Acme Exchange"
+}
+```
+
+- `hotkey` (string, required): The entity hotkey. Not a synthetic subaccount hotkey
+- `roles` (list, required): The roles whose fee is waived, `entity_miner` and/or `permissionless_entity_miner`. Only these are waived: a hotkey listed for `permissionless_entity_miner` still pays for `entity_miner`
+- `note` (string, optional): Who the affiliate is, at most 256 characters
+
+`DELETE /admin/entity-whitelist/<hotkey>` removes a hotkey (404 if it is not listed).
+
+Errors: 400 for an invalid entry or a request to a validator other than the mothership, 401 without a valid API key, 403 below tier 500.
 
 ### Request Entity API Key
 

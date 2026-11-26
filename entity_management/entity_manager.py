@@ -116,6 +116,7 @@ class EntityData(BaseModel):
     roles: List[str] = Field(default_factory=lambda: [EntityRole.ENTITY_MINER.value], description="EntityRole values this entity registered for. Entities registered before roles existed are entity miners")
     pem_take: Optional[float] = Field(default=None, description="Profit share of a permissionless entity miner, set when it registers the role")
     pem_registered_at_ms: Optional[int] = Field(default=None, description="Timestamp when the permissionless_entity_miner role was registered")
+    fee_waived_roles: List[str] = Field(default_factory=list, description="Roles registered without the registration fee because the hotkey was on the entity whitelist")
 
     class Config:
         arbitrary_types_allowed = True
@@ -200,6 +201,7 @@ class EntityManager(ValidatorBroadcastBase):
         # Master lock protects the entities dict structure and the entity_locks dict
         # Use RLock (reentrant) to allow methods to call each other within locked contexts
         self._entities_lock = threading.RLock()
+        self._entity_whitelist_lock = threading.Lock()
 
         # Per-entity locks: only serialize operations on the same entity
         # Operations on different entities can run concurrently
@@ -289,6 +291,13 @@ class EntityManager(ValidatorBroadcastBase):
         )
 
         self.ENTITY_FILE = ValiBkpUtils.get_entity_file_location(running_unit_tests=running_unit_tests)
+
+        # Hotkeys whose registration fee is waived, per role: {hotkey: {"roles": [...], "note": str, "added_at_ms": int}}.
+        # Kept on the mothership, the only validator that registers entities, and not broadcast.
+        self.ENTITY_WHITELIST_FILE = ValiBkpUtils.get_entity_whitelist_file_location(running_unit_tests=running_unit_tests)
+        self.entity_whitelist: Dict[str, dict] = {}
+        if not self.is_backtesting:
+            self.entity_whitelist = ValiUtils.get_vali_json_file_dict(self.ENTITY_WHITELIST_FILE)
 
         # Load initial entities from disk
         if not self.is_backtesting:
@@ -443,7 +452,14 @@ class EntityManager(ValidatorBroadcastBase):
             if existing_entity is None and isinstance(self._miner_account_client.get_standard_account(entity_hotkey), StandardMinerAccount):
                 return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
 
-            if not self.running_unit_tests:
+            # A whitelisted hotkey registers the role without the fee, and without holding collateral
+            with self._entity_whitelist_lock:
+                fee_waived = role in self.entity_whitelist.get(entity_hotkey, {}).get("roles", [])
+            if fee_waived:
+                registration_fee = 0
+                logger.info(f"[ENTITY_MANAGER] {role} registration fee waived for whitelisted entity {entity_hotkey}")
+
+            if not self.running_unit_tests and not fee_waived:
                 # Verify collateral balance
                 try:
                     current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
@@ -478,6 +494,8 @@ class EntityManager(ValidatorBroadcastBase):
             if existing_entity is not None:
                 with self._get_entity_lock(entity_hotkey):
                     existing_entity.roles.append(role)
+                    if fee_waived:
+                        existing_entity.fee_waived_roles.append(role)
                     if is_pem:
                         existing_entity.pem_take = pem_take
                         existing_entity.pem_registered_at_ms = now_ms
@@ -486,7 +504,9 @@ class EntityManager(ValidatorBroadcastBase):
                     f"[ENTITY_MANAGER] Added role {role} to entity {entity_hotkey}, "
                     f"slashed {registration_fee} theta"
                 )
-                return True, f"Entity registered successfully as {role} - {registration_fee} theta registration fee slashed"
+                return True, (f"Entity registered successfully as {role} - "
+                              + ("registration fee waived (whitelisted)" if fee_waived
+                                 else f"{registration_fee} theta registration fee slashed"))
 
             # Registration fee slashed - proceed with registration
             entity_data = EntityData(
@@ -496,7 +516,8 @@ class EntityManager(ValidatorBroadcastBase):
                 registered_at_ms=now_ms,
                 roles=[role],
                 pem_take=pem_take if is_pem else None,
-                pem_registered_at_ms=now_ms if is_pem else None
+                pem_registered_at_ms=now_ms if is_pem else None,
+                fee_waived_roles=[role] if fee_waived else []
             )
 
             self.entities[entity_hotkey] = entity_data
@@ -515,7 +536,54 @@ class EntityManager(ValidatorBroadcastBase):
                 f"[ENTITY_MANAGER] Registered entity {entity_hotkey} as {role}, "
                 f"slashed {registration_fee} theta"
             )
-            return True, f"Entity registered successfully as {role} - {registration_fee} theta registration fee slashed"
+            return True, (f"Entity registered successfully as {role} - "
+                          + ("registration fee waived (whitelisted)" if fee_waived
+                             else f"{registration_fee} theta registration fee slashed"))
+
+    # ==================== Entity Whitelist ====================
+
+    def get_entity_whitelist(self) -> Dict[str, dict]:
+        """Hotkeys whose registration fee is waived: {hotkey: {"roles": [...], "note": str, "added_at_ms": int}}."""
+        with self._entity_whitelist_lock:
+            return {hotkey: dict(entry) for hotkey, entry in self.entity_whitelist.items()}
+
+    def set_entity_whitelist_entry(self, hotkey: str, roles: List[str], note: Optional[str] = None) -> Tuple[bool, str]:
+        """
+        Add a hotkey to the entity whitelist, or replace its entry. register_entity waives the registration fee for
+        each role listed. Removing or changing an entry later does not affect roles already registered.
+
+        Mothership only: it is the only validator that registers entities, and the whitelist is not broadcast.
+        """
+        if not self.running_unit_tests and not self.is_mothership:
+            return False, "The entity whitelist is only kept by the mothership validator"
+        if not isinstance(hotkey, str) or not hotkey or is_synthetic_hotkey(hotkey):
+            return False, f"Invalid hotkey {hotkey}"
+        if (not isinstance(roles, list) or not roles
+                or not all(EntityRole.is_valid(role) for role in roles)):
+            return False, f"roles must be a non-empty list of {[r.value for r in EntityRole]}"
+        if note is not None and (not isinstance(note, str) or len(note) > 256):
+            return False, "note must be a string of at most 256 characters"
+
+        entry = {"roles": sorted(set(roles)), "note": note, "added_at_ms": TimeUtil.now_in_millis()}
+        with self._entity_whitelist_lock:
+            self.entity_whitelist[hotkey] = entry
+            if not self.is_backtesting:
+                ValiBkpUtils.write_file(self.ENTITY_WHITELIST_FILE, self.entity_whitelist)
+        logger.info(f"[ENTITY_MANAGER] Entity whitelist: {hotkey} -> {entry}")
+        return True, f"{hotkey} whitelisted for {entry['roles']}"
+
+    def remove_entity_whitelist_entry(self, hotkey: str) -> Tuple[bool, str]:
+        """Remove a hotkey from the entity whitelist. Roles it already registered are kept. Mothership only."""
+        if not self.running_unit_tests and not self.is_mothership:
+            return False, "The entity whitelist is only kept by the mothership validator"
+        with self._entity_whitelist_lock:
+            if hotkey not in self.entity_whitelist:
+                return False, f"{hotkey} is not on the entity whitelist"
+            del self.entity_whitelist[hotkey]
+            if not self.is_backtesting:
+                ValiBkpUtils.write_file(self.ENTITY_WHITELIST_FILE, self.entity_whitelist)
+        logger.info(f"[ENTITY_MANAGER] Entity whitelist: removed {hotkey}")
+        return True, f"{hotkey} removed from the entity whitelist"
 
     def create_subaccount(
         self,
@@ -2989,6 +3057,9 @@ class EntityManager(ValidatorBroadcastBase):
                             if role not in local_entity.roles:
                                 local_entity.roles.append(role)
                                 logger.info(f"[ENTITY_MANAGER] Added role {role} to entity {entity_hotkey} from sync")
+                        for role in incoming_entity.fee_waived_roles:
+                            if role not in local_entity.fee_waived_roles:
+                                local_entity.fee_waived_roles.append(role)
                         if incoming_entity.pem_take is not None and local_entity.pem_take is None:
                             local_entity.pem_take = incoming_entity.pem_take
                             local_entity.pem_registered_at_ms = incoming_entity.pem_registered_at_ms
@@ -3503,5 +3574,8 @@ class EntityManager(ValidatorBroadcastBase):
             self._entity_locks.clear()
             self._hl_address_to_synthetic.clear()
             self._write_entities_from_memory_to_disk()
+        with self._entity_whitelist_lock:
+            self.entity_whitelist.clear()
+            ValiBkpUtils.write_file(self.ENTITY_WHITELIST_FILE, self.entity_whitelist)
 
         logger.info("[ENTITY_MANAGER] Cleared all entity data")

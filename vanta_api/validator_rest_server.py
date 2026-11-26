@@ -379,6 +379,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/settled-segment/<hotkey>", methods=["GET"])(self.get_settled_segments)
         self.app.route("/admin/settled-segment/<hotkey>", methods=["POST"])(self.correct_settled_segment)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
+        self.app.route("/admin/entity-whitelist", methods=["GET"])(self.get_entity_whitelist)
+        self.app.route("/admin/entity-whitelist", methods=["POST"])(self.set_entity_whitelist_entry)
+        self.app.route("/admin/entity-whitelist/<hotkey>", methods=["DELETE"])(self.remove_entity_whitelist_entry)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
@@ -3685,6 +3688,86 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error correcting settled segment for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def get_entity_whitelist(self):
+        """
+        List the entity whitelist: hotkeys that register the listed roles without the registration fee.
+        Kept by the mothership only. Requires tier 500 access.
+
+        Example:
+        curl "http://localhost:48888/admin/entity-whitelist" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Entity whitelist endpoint requires tier 500 access'}), 403
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+        try:
+            return jsonify({'status': 'success', 'whitelist': self._entity_client.get_entity_whitelist()}), 200
+        except Exception as e:
+            logger.error(f"Error reading entity whitelist: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_entity_whitelist_entry(self):
+        """
+        Add a hotkey to the entity whitelist, or replace its entry. Entity registration then waives the
+        registration fee, and the collateral it would need, for each role listed. Removing or changing an
+        entry does not affect roles already registered. Mothership only. Requires tier 500 access.
+
+        JSON body:
+          hotkey: the entity hotkey (SS58)
+          roles: list of EntityRole values, e.g. ["permissionless_entity_miner"]
+          note: optional, at most 256 characters (who the affiliate is, why)
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/entity-whitelist" \\
+          -H "Authorization: Bearer YOUR_API_KEY" -H "Content-Type: application/json" \\
+          -d '{"hotkey": "5GhDr...", "roles": ["permissionless_entity_miner"], "note": "Acme Exchange"}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Entity whitelist endpoint requires tier 500 access'}), 403
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or 'hotkey' not in data or 'roles' not in data:
+            return jsonify({'error': 'Body must be a JSON object with hotkey and roles'}), 400
+        try:
+            success, message = self._entity_client.set_entity_whitelist_entry(data['hotkey'], data['roles'], data.get('note'))
+        except Exception as e:
+            logger.error(f"Error updating entity whitelist: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        if not success:
+            return jsonify({'error': message}), 400
+        return jsonify({'status': 'success', 'message': message}), 200
+
+    def remove_entity_whitelist_entry(self, hotkey: str):
+        """
+        Remove a hotkey from the entity whitelist. Roles it already registered are kept. Mothership only.
+        Requires tier 500 access.
+
+        Example:
+        curl -X DELETE "http://localhost:48888/admin/entity-whitelist/<hotkey>" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Entity whitelist endpoint requires tier 500 access'}), 403
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+        try:
+            success, message = self._entity_client.remove_entity_whitelist_entry(hotkey)
+        except Exception as e:
+            logger.error(f"Error updating entity whitelist: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        if not success:
+            return jsonify({'error': message}), 404 if 'not on the entity whitelist' in message else 400
+        return jsonify({'status': 'success', 'message': message}), 200
 
     def eliminate_hotkey(self, hotkey: str):
         """

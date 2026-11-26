@@ -359,6 +359,18 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_subaccount_status_rpc(synthetic_hotkey)
 
+    def get_entity_whitelist(self) -> Dict[str, dict]:
+        """Hotkeys whose registration fee is waived: {hotkey: {"roles": [...], "note": str, "added_at_ms": int}}."""
+        return self._server.get_entity_whitelist_rpc()
+
+    def set_entity_whitelist_entry(self, hotkey: str, roles: List[str], note: Optional[str] = None) -> Tuple[bool, str]:
+        """Add a hotkey to the entity whitelist, or replace its entry. Mothership only."""
+        return self._server.set_entity_whitelist_entry_rpc(hotkey, roles, note)
+
+    def remove_entity_whitelist_entry(self, hotkey: str) -> Tuple[bool, str]:
+        """Remove a hotkey from the entity whitelist. Mothership only."""
+        return self._server.remove_entity_whitelist_entry_rpc(hotkey)
+
     def is_permissionless_entity_miner(self, hotkey: str) -> bool:
         """True if `hotkey` is a registered entity with the permissionless_entity_miner role."""
         return self._server.is_permissionless_entity_miner_rpc(hotkey)
