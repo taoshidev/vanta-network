@@ -1182,9 +1182,12 @@ Register a new entity, or add a role to a registered entity. An entity registers
   "status": "success",
   "message": "Entity registered successfully as permissionless_entity_miner - 1000 theta registration fee slashed",
   "entity_hotkey": "5GhDr3xy...abc",
-  "role": "permissionless_entity_miner"
+  "role": "permissionless_entity_miner",
+  "api_key": "<token>"
 }
 ```
+
+`api_key` is the entity's tier 200 validator API key, the same one [Request Entity API Key](#request-entity-api-key) returns: issued on the first registration and returned again by every later one. If it could not be issued, `api_key` is `null` and `api_key_error` says to request it; the registration stands either way. If the response is lost, a retried registration answers "already registered" without a key: request it with `POST /request-api-key`.
 
 A new entity counts toward `ValiConfig.MAX_REGISTERED_ENTITIES` (10) and must not already be a miner. A registered entity adding the other role does not count again. Errors: 400 for an invalid `role` or `pem_take`, a role the entity already holds, the entity cap, a hotkey already used as a miner, insufficient collateral, or a request that reached a validator other than the mothership; 401 for a bad signature; 403 when the coldkey does not own the hotkey.
 

@@ -2,6 +2,7 @@ import hashlib
 import math
 import re
 import secrets
+import threading
 from string import hexdigits
 
 from typing import Optional
@@ -104,6 +105,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     service_name = ValiConfig.RPC_REST_SERVER_SERVICE_NAME
     service_port = ValiConfig.RPC_REST_SERVER_PORT
+
+    # Serializes issuing entity API keys (read api_keys.json, add a key, write it back), so concurrent requests for
+    # one entity, from /entity/register and /request-api-key, get the same key rather than each writing its own
+    _entity_api_key_lock = threading.Lock()
 
     def __init__(self, api_keys_file, refresh_interval=15,
                  metrics_interval_minutes=5, running_unit_tests=False,
@@ -2665,6 +2670,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         share of a permissionless entity miner (at least ValiConfig.PEM_MIN_TAKE, below 1), is required
         for that role and refused for entity_miner. The signature is the coldkey's over the sorted JSON of
         entity_coldkey, entity_hotkey, and role and pem_take when the request carries them.
+
+        A success carries the entity's tier 200 API key as api_key, the one POST /request-api-key returns (the
+        same key on every call). If the key could not be issued, api_key is null, api_key_error says so, and the
+        registration still stands.
         """
         # Check if entity client is available
         if not self._entity_client:
@@ -2739,15 +2748,40 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 pem_take=pem_take
             )
 
-            if success:
-                return jsonify({
-                    'status': 'success',
-                    'message': message,
-                    'entity_hotkey': entity_hotkey,
-                    'role': role
-                }), 200
-            else:
+            if not success:
                 return jsonify({'error': message}), 400
+
+            # The entity's API key (as /request-api-key issues it), so the caller needs no second request. The role
+            # is registered and its fee slashed by now, so a failure here still answers success, with no key
+            response = {
+                'status': 'success',
+                'message': message,
+                'entity_hotkey': entity_hotkey,
+                'role': role,
+                'api_key': None
+            }
+            try:
+                with self._entity_api_key_lock:
+                    api_key = next((k for k, v in self.api_key_to_alias.items() if v == entity_hotkey), None)
+                    if api_key is None:
+                        try:
+                            existing_data = json.loads(ValiBkpUtils.get_file(self.api_keys_file))
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            existing_data = {}
+                        # Written by a request in the last refresh interval, not yet in api_key_to_alias
+                        api_key = existing_data.get(entity_hotkey, {}).get('key')
+                        if api_key is None:
+                            api_key = secrets.token_urlsafe(32)
+                            existing_data[entity_hotkey] = {
+                                "key": api_key,
+                                "tier": ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER
+                            }
+                            ValiBkpUtils.write_file(self.api_keys_file, existing_data)
+                response['api_key'] = api_key
+            except Exception as e:
+                logger.error(f"Entity {entity_hotkey} registered, but issuing its API key failed: {e}")
+                response['api_key_error'] = 'The API key could not be issued. Request it with POST /request-api-key'
+            return jsonify(response), 200
 
         except Exception as e:
             logger.error(f"Error registering entity: {e}")
@@ -2808,27 +2842,32 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if entity_data is None:
                 return jsonify({'error': f'Entity {entity_hotkey} is not registered'}), 404
 
-            # Idempotent: return existing key if already issued for this entity
-            existing_key = next(
-                (k for k, v in self.api_key_to_alias.items() if v == entity_hotkey),
-                None
-            )
-            if existing_key:
-                return jsonify({'api_key': existing_key}), 200
+            # Idempotent: return existing key if already issued for this entity. Under the lock, and checking the
+            # file as well as api_key_to_alias (refreshed every few seconds), so concurrent requests get one key
+            with self._entity_api_key_lock:
+                existing_key = next(
+                    (k for k, v in self.api_key_to_alias.items() if v == entity_hotkey),
+                    None
+                )
+                if existing_key:
+                    return jsonify({'api_key': existing_key}), 200
 
-            # Generate new API key and persist to api_keys.json
-            new_api_key = secrets.token_urlsafe(32)
+                try:
+                    existing_data = json.loads(ValiBkpUtils.get_file(self.api_keys_file))
+                except (FileNotFoundError, json.JSONDecodeError):
+                    existing_data = {}
 
-            try:
-                existing_data = json.loads(ValiBkpUtils.get_file(self.api_keys_file))
-            except (FileNotFoundError, json.JSONDecodeError):
-                existing_data = {}
+                existing_key = existing_data.get(entity_hotkey, {}).get('key')
+                if existing_key:
+                    return jsonify({'api_key': existing_key}), 200
 
-            existing_data[entity_hotkey] = {
-                "key": new_api_key,
-                "tier": ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER
-            }
-            ValiBkpUtils.write_file(self.api_keys_file, existing_data)
+                # Generate new API key and persist to api_keys.json
+                new_api_key = secrets.token_urlsafe(32)
+                existing_data[entity_hotkey] = {
+                    "key": new_api_key,
+                    "tier": ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER
+                }
+                ValiBkpUtils.write_file(self.api_keys_file, existing_data)
 
             return jsonify({'api_key': new_api_key}), 200
 

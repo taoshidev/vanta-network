@@ -159,6 +159,8 @@ def register(
             success_table.add_row("Entity Hotkey", response.get('entity_hotkey'))
             success_table.add_row("Role", role)
             success_table.add_row("Fee Charged", f"{registration_fee} Theta")
+            if response.get("api_key"):
+                success_table.add_row("API Key", response["api_key"])
 
             console.print(success_table)
 
@@ -167,7 +169,9 @@ def register(
             else:
                 next_steps = "You can now create subaccounts using 'vanta entity create-subaccount'"
             success_panel = Panel.fit(
-                f"🎉 Entity registration completed!\n{next_steps}\nCreate your API key using 'vanta entity apikey'",
+                f"🎉 Entity registration completed!\n{next_steps}\n"
+                + ("Store your API key above; 'vanta entity apikey' shows it again" if response.get("api_key")
+                   else "Create your API key using 'vanta entity apikey'"),
                 style="bold green",
                 border_style="green"
             )

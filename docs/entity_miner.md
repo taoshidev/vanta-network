@@ -37,6 +37,7 @@ vanta entity register --wallet-name <wallet> --wallet-hotkey <entity> --role per
 
 - The role costs **1,000 Theta** (`ValiConfig.PERMISSIONLESS_ENTITY_MINER_REGISTRATION_FEE`), slashed from the entity's collateral, whether the hotkey is new or already registered as an entity miner. An entity miner registers the role with the same command; a PEM adds the entity miner role with `--role entity_miner` (the default), for its own fee.
 - Vanta Partner affiliates can register the role **without the 1000 theta fee**. Reach out to the team if you are interested in becoming a Vanta Partner.
+- A successful registration returns the entity's validator API key (`api_key`), the same one `vanta entity apikey` / `POST /request-api-key` returns.
 - `--take` is the PEM's profit share of the PnL its traders make through it: at least **10%** (`ValiConfig.PEM_MIN_TAKE`) and below 100%. It is set at registration and cannot be changed yet.
 - The hotkey goes to the `ENTITY` bucket, like any entity: it receives the entity dust weight and cannot place orders. A hotkey holding only this role cannot create subaccounts.
 
@@ -753,7 +754,7 @@ To register as a [permissionless entity miner](#permissionless-entity-miners) in
 
 ### 7. Obtain Validator API Key
 
-After registering your entity, request a validator API key. This key authenticates the entity miner gateway's WebSocket connection to the validator, which is required for real-time subaccount dashboard streaming.
+Registration already returns your validator API key (shown by `vanta entity register`); the command below returns the same key again if you need it. This key authenticates the entity miner gateway's WebSocket connection to the validator, which is required for real-time subaccount dashboard streaming.
 
 ```bash
 # Mainnet
