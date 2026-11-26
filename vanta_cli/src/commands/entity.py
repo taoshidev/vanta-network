@@ -114,9 +114,9 @@ def register(
 
     # Step 4: Ensure sufficient collateral
     response = make_api_request(f"/collateral/balance/{hotkey.ss58_address}", method="GET", base_url=base_url)
-    if not response or response.get("balance_theta") < registration_fee:
-        console.print(f"[red]Insufficient collateral for entity registration: {response.get('balance_theta')}[/red]")
-        return False
+    balance = response.get("balance_theta") if response else None
+    if balance is None or balance < registration_fee:
+        console.print(f"[yellow]Insufficient collateral for entity registration: {response.get('balance_theta')}[/yellow]")
 
 
     # collateral_success, collateral_msg = ensure_sufficient_collateral(
