@@ -25,7 +25,7 @@ import threading
 from typing import Dict, Optional, Tuple, List
 from pydantic import BaseModel, Field
 
-import template.protocol
+import vanta_protocol
 from entity_management.entity_utils import (
     attach_correlated_exposure_report,
     is_instant_funded,
@@ -2971,14 +2971,14 @@ class EntityManager(ValidatorBroadcastBase):
     # ==================== Validator Broadcast Methods ====================
 
     def broadcast_subaccount_registration(self, entity_hotkey: str, subaccount_info: SubaccountInfo):
-        """Broadcast SubaccountRegistration synapse to other validators."""
-        def create_synapse():
+        """Broadcast SubaccountRegistration request to other validators."""
+        def create_request():
             data = subaccount_info.model_dump()
             data["entity_hotkey"] = entity_hotkey
-            return template.protocol.SubaccountRegistration(subaccount_data=data)
+            return vanta_protocol.BroadcastRequest(payload=data)
 
         self._broadcast_to_validators(
-            synapse_factory=create_synapse,
+            request_factory=create_request,
             broadcast_name="SubaccountRegistration",
             context={"synthetic_hotkey": subaccount_info.synthetic_hotkey}
         )
@@ -3296,21 +3296,21 @@ class EntityManager(ValidatorBroadcastBase):
 
     def broadcast_entity_endpoint_update(self, entity_hotkey: str, endpoint_url: str):
         """
-        Broadcast EntityEndpointUpdate synapse to other validators.
+        Broadcast EntityEndpointUpdate request to other validators.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             endpoint_url: The public-facing endpoint URL
         """
-        def create_synapse():
+        def create_request():
             endpoint_data = {
                 "entity_hotkey": entity_hotkey,
                 "endpoint_url": endpoint_url
             }
-            return template.protocol.EntityEndpointUpdate(endpoint_data=endpoint_data)
+            return vanta_protocol.BroadcastRequest(payload=endpoint_data)
 
         self._broadcast_to_validators(
-            synapse_factory=create_synapse,
+            request_factory=create_request,
             broadcast_name="EntityEndpointUpdate",
             context={"entity_hotkey": entity_hotkey}
         )

@@ -48,7 +48,7 @@ except ImportError:
     websockets = None
 
 try:
-    from bittensor_wallet import Wallet
+    from bittensor import Wallet
 except ImportError:
     Wallet = None
 

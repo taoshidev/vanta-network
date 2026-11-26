@@ -19,7 +19,7 @@ Usage:
 """
 from typing import Optional, Dict, List, Any
 
-import template.protocol
+import vanta_protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import MinerAccount
@@ -156,20 +156,23 @@ class MinerAccountClient(RPCClientBase):
         """Reload account sizes from disk."""
         self._server.re_init_account_sizes()
 
-    def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+    def receive_collateral_record(
+        self, request: vanta_protocol.BroadcastRequest, caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive collateral record update synapse (for axon attachment).
+        Receive a CollateralRecord broadcast from another validator.
 
-        This method is called directly by the validator's axon when a CollateralRecord
+        This method is called directly by the HTTP route handler when a CollateralRecord
         broadcast is received from another validator.
 
         Args:
-            synapse: CollateralRecord synapse from the sending validator
+            request: BroadcastRequest from the sending validator
+            caller_hotkey: The sending validator's hotkey, verified by the auth layer
 
         Returns:
-            Updated synapse with successfully_processed and error_message fields
+            BroadcastResponse with successfully_processed and error_message fields
         """
-        return self._server.receive_collateral_record_rpc(synapse)
+        return self._server.receive_collateral_record_rpc(request, caller_hotkey)
 
     # ==================== MinerAccount Cache Methods ====================
 
@@ -263,10 +266,10 @@ class MinerAccountClient(RPCClientBase):
         return self._server.reopen_standard_account(hotkey, reopened_at_ms)
 
     def receive_standard_miner_record(
-        self, synapse: template.protocol.StandardMinerRecord
-    ) -> template.protocol.StandardMinerRecord:
-        """Receive a StandardMinerRecord synapse (for axon attachment)."""
-        return self._server.receive_standard_miner_record_rpc(synapse)
+        self, request: vanta_protocol.BroadcastRequest, caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
+        """Receive a StandardMinerRecord broadcast from another validator."""
+        return self._server.receive_standard_miner_record_rpc(request, caller_hotkey)
 
     def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
         """The record of the account a standard miner opened; None for every other hotkey."""
@@ -285,9 +288,11 @@ class MinerAccountClient(RPCClientBase):
         """Mark a locked account closed by its miner's withdrawal; returns whether the lock held is closed."""
         return self._server.close_locked_account(hotkey, closed_at_ms)
 
-    def receive_size_locks(self, synapse: template.protocol.AccountSizeLocks) -> template.protocol.AccountSizeLocks:
-        """Receive an AccountSizeLocks synapse (for axon attachment)."""
-        return self._server.receive_size_locks_rpc(synapse)
+    def receive_size_locks(
+        self, request: vanta_protocol.BroadcastRequest, caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
+        """Receive an AccountSizeLocks broadcast from another validator."""
+        return self._server.receive_size_locks_rpc(request, caller_hotkey)
 
     def get_collateral_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[float]:
         """The size the collateral alone gives, lock or not; None for a hotkey without an account."""

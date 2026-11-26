@@ -40,16 +40,14 @@ def check_validator_weights(
         subtensor = bt.Subtensor(network=network)
 
         # Query immunity period for the subnet
+        # bt.Subtensor has no `.substrate` attribute in v11 - the named "immunity_period" read
+        # (bittensor.reads.hyperparameters) replaces the raw SubtensorModule.ImmunityPeriod query.
         print("Querying subnet parameters...")
         try:
-            immunity_period_blocks = subtensor.substrate.query(
-                module='SubtensorModule',
-                storage_function='ImmunityPeriod',
-                params=[netuid]
-            )
+            immunity_period_blocks = subtensor.read("immunity_period", netuid=netuid)
 
             if immunity_period_blocks is not None:
-                immunity_blocks = int(immunity_period_blocks.value)
+                immunity_blocks = int(immunity_period_blocks)
                 # Bittensor block time is 12 seconds
                 BLOCK_TIME_SECONDS = 12
                 immunity_seconds = immunity_blocks * BLOCK_TIME_SECONDS
@@ -65,9 +63,10 @@ def check_validator_weights(
 
         print("-" * 80)
 
-        # Get metagraph
+        # Get metagraph - bt.Subtensor has no top-level .metagraph() method in v11; fetch via
+        # subtensor.subnets.metagraph(netuid) instead (see MIGRATION-GUIDE.md "The metagraph").
         print("Fetching metagraph...")
-        metagraph = subtensor.metagraph(netuid)
+        metagraph = subtensor.subnets.metagraph(netuid)
 
         # Find the validator's UID
         validator_uid = None
@@ -83,56 +82,23 @@ def check_validator_weights(
         print(f"Found validator at UID {validator_uid}")
         print("-" * 80)
 
-        # Query weights directly from the chain for this validator
+        # Query weights directly from the chain for this validator.
+        # bt.Subtensor has no `.substrate` attribute in v11 - the named "weights" read
+        # (bittensor.reads.weights) replaces the raw SubtensorModule.Weights query, and already
+        # returns {validator_uid: {miner_uid: fraction}} normalized so each row sums to 1.0.
         print("Querying weights from chain...")
         try:
-            # Method 1: Try using substrate query directly
-            weights_data = subtensor.substrate.query(
-                module='SubtensorModule',
-                storage_function='Weights',
-                params=[netuid, validator_uid]
-            )
+            all_weights = subtensor.read("weights", netuid=netuid)
+            weights_dict = all_weights.get(validator_uid)
 
-            if weights_data is None or not weights_data.value:
+            if not weights_dict:
                 print(f"No weights found for validator UID {validator_uid}")
                 print("This validator may not have set weights yet, or weights have expired.")
                 sys.exit(0)
 
-            # Parse the weights
-            # weights_data.value is a list of tuples: [(uid, weight), (uid, weight), ...]
-            # First pass: get raw weights and calculate sum
-            raw_weights = {}
-            raw_sum = 0
-            for uid, weight in weights_data.value:
-                raw_weights[uid] = float(weight)
-                raw_sum += float(weight)
-
-            # Second pass: normalize so weights sum to 1.0
-            weights_dict = {}
-            if raw_sum > 0:
-                for uid, weight in raw_weights.items():
-                    weights_dict[uid] = weight / raw_sum
-            else:
-                weights_dict = raw_weights
-
         except Exception as e:
             print(f"Error querying weights: {e}")
-            print("Trying alternative method...")
-
-            # Method 2: Try getting weights from metagraph.weights attribute
-            try:
-                # Some bittensor versions store weights differently
-                all_weights = subtensor.weights(netuid)
-                if validator_uid >= len(all_weights):
-                    print(f"ERROR: Validator UID {validator_uid} out of range")
-                    sys.exit(1)
-
-                validator_weight_list = all_weights[validator_uid]
-                weights_dict = {uid: float(w) for uid, w in enumerate(validator_weight_list) if w > 0}
-
-            except Exception as e2:
-                print(f"Alternative method also failed: {e2}")
-                sys.exit(1)
+            sys.exit(1)
 
         # Build list of (uid, hotkey, weight) tuples
         weight_data = []

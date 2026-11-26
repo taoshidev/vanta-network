@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import MagicMock, Mock, patch
 
-import template.protocol
+import vanta_protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from shared_objects.rpc.server_registry import ServerRegistry
@@ -272,7 +272,7 @@ class TestAssetSelectionEndpoint(TestBase):
 
     def setUp(self):
         super().setUp()
-        from bittensor_wallet import Keypair
+        from bittensor.sp_core import Keypair
         from flask import Flask
         from vanta_api.validator_rest_server import ValidatorRestServer
         self.coldkey, self.hotkey = Keypair.create_from_uri("//Alice"), Keypair.create_from_uri("//Bob")
@@ -521,9 +521,9 @@ class TestOpeningTransport(TestBase):
         self.mothership._broadcast_to_validators.assert_called_once()
         kwargs = self.mothership._broadcast_to_validators.call_args.kwargs
         self.assertEqual(kwargs["broadcast_name"], "StandardMinerOpening")
-        synapse = kwargs["synapse_factory"]()
-        self.assertIsInstance(synapse, template.protocol.StandardMinerOpening)
-        return pickle.loads(pickle.dumps(synapse)).opening
+        synapse = kwargs["request_factory"]()
+        self.assertIsInstance(synapse, vanta_protocol.BroadcastRequest)
+        return pickle.loads(pickle.dumps(synapse)).payload
 
     def _receive(self, opening, sender=MOTHERSHIP) -> bool:
         return self.peer.receive_standard_miner_opening_update(opening, sender_hotkey=sender)
@@ -614,9 +614,9 @@ class TestOpeningTransport(TestBase):
     def test_the_axon_handler_keeps_the_ordinary_call_timeout(self):
         client = ContractClient(running_unit_tests=True)
         client._invoke_rpc = Mock(return_value="answered")
-        synapse = template.protocol.StandardMinerOpening(opening={"hotkey": NEW})
-        self.assertEqual(client.receive_standard_miner_opening(synapse), "answered")
-        client._invoke_rpc.assert_called_once_with("receive_standard_miner_opening_rpc", args=(synapse,),
+        request = vanta_protocol.BroadcastRequest(payload={"hotkey": NEW})
+        self.assertEqual(client.receive_standard_miner_opening(request, PEER), "answered")
+        client._invoke_rpc.assert_called_once_with("receive_standard_miner_opening_rpc", args=(request, PEER),
                                                    timeout_s=RPCClientBase.RPC_CALL_TIMEOUT_S)
         self.assertGreater(ContractClient.RPC_CALL_TIMEOUT_S, RPCClientBase.RPC_CALL_TIMEOUT_S)
 
@@ -641,15 +641,13 @@ class TestOpeningTransport(TestBase):
         self.assertIsNone(self.account_client.get_standard_account(NEW))
 
     def test_the_synapse_handler_applies_the_opening_and_reports_the_outcome(self):
-        synapse = template.protocol.StandardMinerOpening(opening={"hotkey": NEW, "record": record().to_dict()})
-        synapse.dendrite.hotkey = PEER
-        answered = self.contract_client.receive_standard_miner_opening(synapse)
+        request = vanta_protocol.BroadcastRequest(payload={"hotkey": NEW, "record": record().to_dict()})
+        answered = self.contract_client.receive_standard_miner_opening(request, PEER)
         self.assertFalse(answered.successfully_processed)
         self.assertTrue(answered.error_message)
         self.assertIsNone(self.account_client.get_standard_account(NEW))
         # The test contract server verifies the sender in its own process, against the configured testnet mothership
-        synapse.dendrite.hotkey = REAL_TESTNET_MOTHERSHIP
-        answered = self.contract_client.receive_standard_miner_opening(synapse)
+        answered = self.contract_client.receive_standard_miner_opening(request, REAL_TESTNET_MOTHERSHIP)
         self.assertTrue(answered.successfully_processed, answered.error_message)
         self.assertEqual(answered.error_message, "")
         self.assertEqual(self.account_client.get_standard_account(NEW), record())

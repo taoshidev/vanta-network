@@ -300,7 +300,7 @@ class TestRecordBroadcast(TestBase):
         self.mothership._broadcast_to_validators.assert_called_once()
         kwargs = self.mothership._broadcast_to_validators.call_args.kwargs
         self.assertEqual(kwargs["broadcast_name"], "StandardMinerRecord")
-        self.assertEqual(kwargs["synapse_factory"]().record,
+        self.assertEqual(kwargs["request_factory"]().record,
                          {"hotkey": HOTKEY, "record": record(pro_account_size=PRO_SIZE).to_dict()})
         # An opening has its own broadcast
         self.mothership.open_standard_account(OTHER, record())

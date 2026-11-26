@@ -104,7 +104,7 @@ def deposit(
         hotkey = wallet.hotkey
     except Exception as e:
         console.print(f"[red]Failed to unlock wallet: {e}[/red]")
-        manager.subtensor_api.close()
+        manager.subtensor.close()
         return False
 
     # Set netuid based on network
@@ -116,7 +116,7 @@ def deposit(
         console=console,
     ) as progress:
         task = progress.add_task("Fetching stake information...", total=None)
-        source_stake: Any = manager.subtensor_api.staking.get_stake_info_for_coldkey(coldkey.ss58_address)
+        source_stake: Any = manager.subtensor.staking.positions(coldkey.ss58_address)
 
         progress.update(task, description="Checking Wallet Information...")
         balance: Any = manager.balance_of(hotkey.ss58_address) / 10 ** 9
@@ -157,7 +157,6 @@ def deposit(
         stake_table.add_column("Hotkey", style="cyan", no_wrap=True)
         stake_table.add_column("Netuid", style="magenta", no_wrap=True)
         stake_table.add_column("Stake Amount", style="green", justify="right")
-        stake_table.add_column("Locked", style="yellow", justify="right")
         stake_table.add_column("Registered", style="bold", justify="center")
 
         for stake_info in source_stake:
@@ -165,7 +164,7 @@ def deposit(
                 continue
 
             # Format the hotkey address to show first 8 and last 6 characters
-            formatted_hotkey = f"{stake_info.hotkey_ss58[:8]}...{stake_info.hotkey_ss58[-6:]}"
+            formatted_hotkey = f"{stake_info.hotkey[:8]}...{stake_info.hotkey[-6:]}"
 
             # Highlight the target netuid row
             netuid_style = "bold green" if stake_info.netuid == netuid else "magenta"
@@ -173,15 +172,14 @@ def deposit(
             stake_table.add_row(
                 formatted_hotkey,
                 f"[{netuid_style}]{stake_info.netuid}[/{netuid_style}]",
-                f"{float(stake_info.stake):.4f}",
-                f"{float(stake_info.locked):.4f}",
+                f"{stake_info.stake.amount:.4f}",
                 "✅" if stake_info.is_registered else "❌"
             )
         console.print(stake_table)
 
         # Set matching_stake
         matching_stake = next(
-            (stake for stake in source_stake if (stake.hotkey_ss58 == hotkey.ss58_address and stake.netuid == netuid)),
+            (stake for stake in source_stake if (stake.hotkey == hotkey.ss58_address and stake.netuid == netuid)),
             None
         )
     else:
@@ -191,18 +189,18 @@ def deposit(
       # Check if source_stake is empty to avoid index error
     if not source_stake:
         console.print("[red]❌ No source stake found for this coldkey[/red]")
-        manager.subtensor_api.close()
+        manager.subtensor.close()
         return None
 
     if not matching_stake:
         console.print(f"[red]❌ No stake found for hotkey {hotkey} on netuid {netuid}[/red]")
-        manager.subtensor_api.close()
+        manager.subtensor.close()
         return None
 
     confirm = typer.confirm(f"Deposit {amount} Theta from {hotkey.ss58_address}?")
     if not confirm:
         console.print("[yellow]Deposit cancelled[/yellow]")
-        manager.subtensor_api.close()
+        manager.subtensor.close()
         return False
 
     # Use configured dest address
@@ -213,7 +211,7 @@ def deposit(
     extrinsic = manager.create_stake_transfer_extrinsic(
         amount=int(amount * 10**9),     # convert theta to rao_theta
         dest=dest_address,
-        source_stake=matching_stake.hotkey_ss58,
+        source_stake=matching_stake.hotkey,
         source_wallet=wallet,
         wallet_password=password
     )
@@ -221,7 +219,7 @@ def deposit(
     encoded = manager.encode_extrinsic(extrinsic)
 
     # Close the subtensor connection to prevent CLI from hanging
-    manager.subtensor_api.close()
+    manager.subtensor.close()
 
     result = {
         "encoded": encoded.hex(),

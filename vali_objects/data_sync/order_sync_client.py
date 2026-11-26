@@ -25,6 +25,7 @@ import bittensor as bt
 
 from shared_objects.rpc.common_data_client import CommonDataClient
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
+from shared_objects.log import logger
 
 
 class OrderSyncClient:
@@ -50,7 +51,7 @@ class OrderSyncClient:
         try:
             return self._client.is_sync_waiting()
         except Exception as e:
-            bt.logging.warning(f"OrderSyncClient.is_sync_waiting unreachable, assuming not waiting: {e}")
+            logger.warning(f"OrderSyncClient.is_sync_waiting unreachable, assuming not waiting: {e}")
             return False
 
     def begin_order(self, label: str = None) -> "OrderSyncClient._OrderAdmission":
@@ -71,7 +72,7 @@ class OrderSyncClient:
                 return self._OrderAdmission(self._client, token=None, rejected=True)
             return self._OrderAdmission(self._client, token=token, rejected=False)
         except Exception as e:
-            bt.logging.warning(f"OrderSyncClient.begin_order failed, proceeding without sync gate: {e}")
+            logger.warning(f"OrderSyncClient.begin_order failed, proceeding without sync gate: {e}")
             return self._OrderAdmission(self._client, token=None, rejected=False)
 
     def get_order_count(self) -> int:
@@ -113,7 +114,7 @@ class OrderSyncClient:
                     self.client.end_order(self.token)
                 except Exception as e:
                     # If this fails (core down), the registration self-heals via the R2.4 TTL reap.
-                    bt.logging.warning(f"OrderSyncClient.end_order failed (registration reaped after TTL): {e}")
+                    logger.warning(f"OrderSyncClient.end_order failed (registration reaped after TTL): {e}")
             return False  # never suppress the order's own exception
 
     class _SyncContext:
@@ -138,13 +139,13 @@ class OrderSyncClient:
             while not self._stop_heartbeat.wait(ValiConfig.SYNC_LEASE_RENEW_INTERVAL_S):
                 try:
                     if not self.client.renew_sync_lease():
-                        bt.logging.error(
+                        logger.error(
                             "OrderSyncClient: sync gate no longer held (lease expired or cleared) "
                             "— the in-progress sync has lost its exclusion window"
                         )
                         return
                 except Exception as e:
-                    bt.logging.warning(f"OrderSyncClient: sync-lease renewal failed (continuing): {e}")
+                    logger.warning(f"OrderSyncClient: sync-lease renewal failed (continuing): {e}")
 
         def __enter__(self):
             self.acquired = self.client.wait_for_orders(self.timeout_seconds)

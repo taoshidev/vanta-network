@@ -8,7 +8,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import template.protocol
+import vanta_protocol
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from shared_objects.rpc.server_registry import ServerRegistry
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
@@ -164,10 +164,10 @@ class TestLockingThroughTheManager(TestBase):
         self.manager._broadcast_to_validators = MagicMock()
         lock = self._lock([LEGACY])[LEGACY]
         sent = self.manager._broadcast_to_validators.call_args.kwargs
-        self.assertEqual((sent["broadcast_name"], sent["synapse_factory"]().size_locks), ("AccountSizeLocks", {LEGACY: lock.to_dict()}))
+        self.assertEqual((sent["broadcast_name"], sent["request_factory"]().payload), ("AccountSizeLocks", {LEGACY: lock.to_dict()}))
         self.assertTrue(self.manager.close_locked_account(LEGACY, START + DAY))
         closed = lock.closed(START + DAY)
-        self.assertEqual(self.manager._broadcast_to_validators.call_args.kwargs["synapse_factory"]().size_locks, {LEGACY: closed.to_dict()})
+        self.assertEqual(self.manager._broadcast_to_validators.call_args.kwargs["request_factory"]().payload, {LEGACY: closed.to_dict()})
         peer = MinerAccountManager(running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL)
         peer.sync_miner_account_sizes_data({})
         peer.get_or_create(LEGACY).size_lock = AccountSizeLock(START + HOUR, 250_000.0, 500.0)  # its own, different
@@ -191,7 +191,7 @@ class TestLockingThroughTheManager(TestBase):
         self.manager.set_miner_account_size(LEGACY, 10.0, START + 7 * HOUR)
         shrunk = AccountSizeLock(START + 7 * HOUR, ValiConfig.MIN_CAPITAL, 10.0)
         self.assertEqual(self.manager.accounts[LEGACY].size_lock, shrunk)
-        self.assertEqual(self.manager._broadcast_to_validators.call_args.kwargs["synapse_factory"]().size_locks,
+        self.assertEqual(self.manager._broadcast_to_validators.call_args.kwargs["request_factory"]().payload,
                          {LEGACY: shrunk.to_dict()})
         # A deposit afterwards does not raise it again
         self.manager.set_miner_account_size(LEGACY, 300.0, START + 8 * HOUR)
@@ -218,10 +218,9 @@ class TestLockingThroughTheManager(TestBase):
             server = MinerAccountServer(running_unit_tests=True, start_server=False, connection_mode=RPCConnectionMode.LOCAL)
         server._manager.sync_miner_account_sizes_data({})
         lock = AccountSizeLock(START, 150_000.0, 300.0)
-        synapse = pickle.loads(pickle.dumps(template.protocol.AccountSizeLocks(size_locks={LEGACY: lock.to_dict()})))
-        synapse.dendrite.hotkey = "mothership"
+        request = pickle.loads(pickle.dumps(vanta_protocol.BroadcastRequest(payload={LEGACY: lock.to_dict()})))
         with patch.object(server._manager, "verify_broadcast_sender", return_value=True) as verify:
-            answered = server.receive_size_locks_rpc(synapse)
+            answered = server.receive_size_locks_rpc(request, "mothership")
         self.assertTrue(answered.successfully_processed, answered.error_message)
         self.assertEqual(verify.call_args.args[0], "mothership")
         self.assertEqual(server._manager.accounts[LEGACY].size_lock, lock)

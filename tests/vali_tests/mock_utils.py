@@ -56,19 +56,16 @@ class EnhancedMockMetagraph(BaseMockMetagraph):
         # Assume 0.1 TAO per tempo per miner as reasonable default
         self.emission = [0.1] * len(hotkeys)
 
-        # Substrate reserves for ALPHA/TAO conversion
-        # Need to mimic multiprocessing.Value objects with .value accessor
+        # TAO-per-ALPHA spot price for ALPHA/TAO conversion (bittensor v11's metagraph.price;
+        # replaces the old tao_reserve_rao/alpha_reserve_rao pair, which only ever fed
+        # DebtBasedScoring the ratio of the two - see subtensor_ops.py's _get_tao_per_alpha_price).
+        # Need to mimic a multiprocessing.Value-like object with a .value accessor.
         from unittest.mock import MagicMock
 
-        # Reserve values: 1M TAO reserve, 10M ALPHA reserve
-        # This gives alpha_to_tao_rate = 1M / 10M = 0.1 TAO per ALPHA
-        tao_reserve_mock = MagicMock()
-        tao_reserve_mock.value = 1_000_000 * 1e9  # 1M TAO in RAO
-        self.tao_reserve_rao = tao_reserve_mock
-
-        alpha_reserve_mock = MagicMock()
-        alpha_reserve_mock.value = 10_000_000 * 1e9  # 10M ALPHA in RAO
-        self.alpha_reserve_rao = alpha_reserve_mock
+        # 1M TAO reserve / 10M ALPHA reserve => 0.1 TAO per ALPHA
+        tao_per_alpha_price_mock = MagicMock()
+        tao_per_alpha_price_mock.value = 0.1
+        self.tao_per_alpha_price = tao_per_alpha_price_mock
 
         # TAO to USD price: $500 per TAO as reasonable test value
         self.tao_to_usd_rate = 500.0

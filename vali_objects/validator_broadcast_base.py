@@ -22,19 +22,19 @@ Usage:
             )
 
         def my_broadcast_method(self, data):
-            def create_synapse():
-                return template.protocol.MySynapse(data=data)
+            def create_request():
+                return vanta_protocol.MyMessageRequest(data=data)
 
             self._broadcast_to_validators(
-                synapse_factory=create_synapse,
+                request_factory=create_request,
                 broadcast_name="MyUpdate"
             )
 """
 import threading
 from typing import Callable, Optional
 import bittensor as bt
+from pydantic import BaseModel
 
-import template.protocol
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.log import logger
 
@@ -87,13 +87,13 @@ class ValidatorBroadcastBase:
         elif validator_hotkey:
             # Wallet-less path: identity from the ss58 string, no keypair loaded. Signing happens in
             # core (SubtensorOpsClient), so this process never needs the wallet object.
-            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Wallet-less mode - identity from hotkey string {validator_hotkey}...")
+            logger.info(f"[VALIDATOR_BROADCAST_BASE] Wallet-less mode - identity from hotkey string {validator_hotkey}...")
             self.wallet = None
             self._hotkey = validator_hotkey
             self.is_mothership = ValiUtils.is_mothership_hotkey(validator_hotkey, self.is_testnet)
         else:
             logger.info(f"[VALIDATOR_BROADCAST_BASE] Production mode - creating wallet (running_unit_tests={running_unit_tests}, config={config})")
-            self.wallet = bt.Wallet(config=config)
+            self.wallet = bt.Wallet(name=config.wallet.name, hotkey=config.wallet.hotkey, path=config.wallet.path)
             self._hotkey = self.wallet.hotkey.ss58_address
             # Derive is_mothership using centralized utility
             self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, self.is_testnet)
@@ -117,18 +117,18 @@ class ValidatorBroadcastBase:
 
     def _broadcast_to_validators(
         self,
-        synapse_factory: Callable[[], template.protocol.bt.Synapse],
+        request_factory: Callable[[], BaseModel],
         broadcast_name: str,
         context: Optional[dict] = None
     ) -> None:
         """
-        Broadcast a synapse to other validators in a background thread.
+        Broadcast a request to other validators in a background thread.
 
         This method should only be called by the mothership validator.
         It spawns a thread that runs the broadcast via SubtensorOpsClient RPC.
 
         Args:
-            synapse_factory: Function that creates the synapse to broadcast
+            request_factory: Function that creates the request to broadcast
             broadcast_name: Human-readable name for logging (e.g., "CollateralRecord")
             context: Optional dict with context info for logging (e.g., {"hotkey": "5..."})
         """
@@ -143,7 +143,7 @@ class ValidatorBroadcastBase:
         def run_broadcast():
             try:
                 self._do_broadcast_via_rpc(
-                    synapse_factory=synapse_factory,
+                    request_factory=request_factory,
                     broadcast_name=broadcast_name,
                     context=context
                 )
@@ -158,19 +158,19 @@ class ValidatorBroadcastBase:
 
     def _do_broadcast_via_rpc(
         self,
-        synapse_factory: Callable[[], template.protocol.bt.Synapse],
+        request_factory: Callable[[], BaseModel],
         broadcast_name: str,
         context: Optional[dict] = None
     ) -> None:
         """
-        Broadcast synapse to other validators via SubtensorOpsClient RPC.
+        Broadcast a request to other validators via SubtensorOpsClient RPC.
 
         This method delegates the actual broadcast to SubtensorOpsManager which has
         access to the wallet and subtensor objects. This allows ValidatorBroadcastBase
         to work in separate processes without direct subtensor access.
 
         Args:
-            synapse_factory: Function that creates the synapse to broadcast
+            request_factory: Function that creates the request to broadcast
             broadcast_name: Human-readable name for logging
             context: Optional context dict for logging
         """
@@ -186,11 +186,11 @@ class ValidatorBroadcastBase:
                 logger.debug(f"[BROADCAST] No other validators to broadcast {broadcast_name} to")
                 return
 
-            # Create synapse using factory
-            synapse = synapse_factory()
+            # Create request using factory
+            request = request_factory()
 
-            # Validate synapse is picklable for RPC transmission
-            synapse = self._serialize_synapse(synapse)
+            # Validate request is picklable for RPC transmission
+            request = self._serialize_request(request)
 
             context_str = f" for {context}" if context else ""
             logger.info(
@@ -199,8 +199,9 @@ class ValidatorBroadcastBase:
 
             # Broadcast via RPC client
             result = self._subtensor_ops_client.broadcast_to_validators_rpc(
-                synapse=synapse,
-                validator_axons_list=validator_axons
+                request=request,
+                validator_axons_list=validator_axons,
+                message_name=broadcast_name
             )
 
             if result.get("success"):
@@ -225,28 +226,27 @@ class ValidatorBroadcastBase:
             import traceback
             logger.error(traceback.format_exc())
 
-    def _serialize_synapse(self, synapse: template.protocol.bt.Synapse) -> template.protocol.bt.Synapse:
+    def _serialize_request(self, request: BaseModel) -> BaseModel:
         """
-        Validate that synapse is picklable for RPC transmission.
+        Validate that the request model is picklable for RPC transmission.
 
         Args:
-            synapse: The synapse object to serialize
+            request: The *Request model to send (vanta_protocol)
 
         Returns:
-            The synapse object (if picklable)
+            The request object (if picklable)
 
         Raises:
-            TypeError: If synapse is not picklable
+            TypeError: If request is not picklable
         """
         import pickle
 
-        # Verify synapse is picklable
         try:
-            pickle.dumps(synapse)
+            pickle.dumps(request)
         except (TypeError, AttributeError) as e:
-            raise TypeError(f"Synapse {synapse.__class__.__name__} is not picklable: {e}")
+            raise TypeError(f"Request {request.__class__.__name__} is not picklable: {e}")
 
-        return synapse
+        return request
 
     def _get_validator_axons(self) -> list:
         """
@@ -282,12 +282,12 @@ class ValidatorBroadcastBase:
         that the broadcast came from the authorized mothership validator.
 
         IMPORTANT: The sender_hotkey parameter should ALWAYS come from
-        synapse.dendrite.hotkey, which is cryptographically verified by
-        Bittensor's authentication system. Never accept sender identity
-        from user-provided parameters.
+        the request's caller_hotkey, which is set by the signed-request auth layer
+        (shared_objects/http_auth/) after cryptographically verifying the
+        caller. Never accept sender identity from user-provided parameters.
 
         Args:
-            sender_hotkey: Hotkey from synapse.dendrite.hotkey (Bittensor-authenticated)
+            sender_hotkey: Hotkey from the request's caller_hotkey (auth-layer-verified)
             broadcast_name: Name of broadcast type for logging
 
         Returns:
@@ -325,7 +325,7 @@ class ValidatorBroadcastBase:
 
     def _handle_incoming_broadcast(
         self,
-        synapse_data: dict,
+        request_data: dict,
         sender_hotkey: Optional[str],
         broadcast_name: str,
         update_callback: Callable[[dict], None]
@@ -354,18 +354,18 @@ class ValidatorBroadcastBase:
                     self._save_to_disk()
 
                 return self._handle_incoming_broadcast(
-                    synapse_data=data,
+                    request_data=data,
                     sender_hotkey=sender_hotkey,
                     broadcast_name="MyUpdate",
                     update_callback=update_state
                 )
 
         Args:
-            synapse_data: Dictionary containing the broadcast data
+            request_data: Dictionary containing the broadcast data
             sender_hotkey: The hotkey of the validator that sent this broadcast
-                          (from synapse.dendrite.hotkey)
+                          (from the request's caller_hotkey)
             broadcast_name: Name of the broadcast type (for logging, e.g., "AssetSelection")
-            update_callback: Function that takes synapse_data and updates local state.
+            update_callback: Function that takes request_data and updates local state.
                            Should raise an exception if validation fails.
 
         Returns:
@@ -377,7 +377,7 @@ class ValidatorBroadcastBase:
                 return False
 
             # Call the update callback to modify local state
-            update_callback(synapse_data)
+            update_callback(request_data)
 
             logger.info(
                 f"[{broadcast_name.upper()}] Successfully processed broadcast from {sender_hotkey}"

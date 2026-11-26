@@ -1390,7 +1390,7 @@ class ServerOrchestrator:
         1. _local_cache_refresh_period_ms attribute (not None)
         2. populate_cache() method existence
 
-        Should be called after start_server_daemons() and before ValidatorBase.__init__()
+        Should be called after start_server_daemons() and before Validator.wire_http_server()
         since cache population may depend on daemon state being initialized.
 
         Args:
@@ -1402,7 +1402,7 @@ class ServerOrchestrator:
         Example:
             orchestrator.start_server_daemons([...])
             orchestrator.warmup_client_caches()  # Blocks until caches populated
-            # Now safe to start axon (ValidatorBase.__init__)
+            # Now safe to start axon (Validator.wire_http_server)
         """
         if not self._started:
             logger.warning("Servers not started, cannot warm up caches")

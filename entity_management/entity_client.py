@@ -27,7 +27,7 @@ from typing import Optional, Tuple, Dict, List
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 
-from template.protocol import SubaccountRegistration, EntityEndpointUpdate
+import vanta_protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -536,25 +536,28 @@ class EntityClient(RPCClientBase):
         Returns:
             bool: True if successful, False otherwise
         """
-        # Call the data-level RPC method (not the synapse handler)
+        # Call the data-level RPC method (not the request handler)
         return self._server.receive_subaccount_registration_update_rpc(subaccount_data, sender_hotkey)
 
     def receive_subaccount_registration(
         self,
-        synapse: SubaccountRegistration
-    ) -> SubaccountRegistration:
+        request: vanta_protocol.BroadcastRequest,
+        caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive subaccount registration synapse (for axon attachment).
+        Receive subaccount registration request (used as a route business_fn, see
+        neurons/validator_base.py's wire_http_server()).
 
-        This delegates to the server's RPC handler. Used by validator_base.py for axon attachment.
+        This delegates to the server's RPC handler.
 
         Args:
-            synapse: SubaccountRegistration synapse from another validator
+            request: BroadcastRequest from another validator
+            caller_hotkey: The hotkey of the validator that sent this broadcast (auth-layer-verified)
 
         Returns:
-            Updated synapse with success/error status
+            BroadcastResponse with success/error status
         """
-        return self._server.receive_subaccount_registration_rpc(synapse)
+        return self._server.receive_subaccount_registration_rpc(request, caller_hotkey)
 
     # ==================== Entity Endpoint URL Methods ====================
 
@@ -592,35 +595,25 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_endpoint_url_by_address_rpc(hl_address=hl_address, subaccount=subaccount)
 
-    def receive_entity_endpoint_update(self, endpoint_data: dict, sender_hotkey: str = None) -> bool:
-        """
-        Process incoming entity endpoint update from another validator.
-
-        Args:
-            endpoint_data: Dict containing entity_hotkey and endpoint_url
-            sender_hotkey: The hotkey of the validator that sent this broadcast
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        return self._server.receive_entity_endpoint_update_rpc(endpoint_data, sender_hotkey)
-
-    def receive_entity_endpoint_synapse(
+    def receive_entity_endpoint_update(
         self,
-        synapse: EntityEndpointUpdate
-    ) -> EntityEndpointUpdate:
+        request: vanta_protocol.BroadcastRequest,
+        caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive EntityEndpointUpdate synapse (for axon attachment).
+        Receive EntityEndpointUpdate request (used as a route business_fn, see
+        neurons/validator_base.py's wire_http_server()).
 
-        This delegates to the server's RPC handler. Used by validator_base.py for axon attachment.
+        This delegates to the server's RPC handler.
 
         Args:
-            synapse: EntityEndpointUpdate synapse from another validator
+            request: BroadcastRequest from another validator
+            caller_hotkey: The hotkey of the validator that sent this broadcast (auth-layer-verified)
 
         Returns:
-            Updated synapse with success/error status
+            BroadcastResponse with success/error status
         """
-        return self._server.receive_entity_endpoint_synapse_rpc(synapse)
+        return self._server.receive_entity_endpoint_update_request_rpc(request, caller_hotkey)
 
     # ==================== Health Check Methods ====================
 

@@ -1,7 +1,10 @@
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
 
+import argparse
 import json
+import logging
+import os
 
 from typing import Dict, List, Optional
 from google.cloud import secretmanager
@@ -11,8 +14,113 @@ from vali_objects.exceptions.vali_bkp_file_missing_exception import (
 )
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from shared_objects.log import logger
+from shared_objects.bt_config import add_logging_args, add_subtensor_args, add_wallet_args, build_config
+from shared_objects.http_server import add_http_server_args
 
 class ValiUtils:
+    @staticmethod
+    def get_config():
+        # Set up the configuration parser. Using command-line arguments allows users to customize
+        # various validator settings.
+        # NOTE: standalone function (not a Validator method) so the standalone vanta-state entrypoint
+        # (run_state_server.py) can build an identical config for the state servers without
+        # constructing a Validator (or a wallet).
+        parser = argparse.ArgumentParser()
+        # Set autosync to store true if flagged, otherwise defaults to False.
+        parser.add_argument("--autosync", action='store_true',
+                            help="Automatically sync order data with a validator trusted by Taoshi.")
+        # Set run_generate to store true if flagged, otherwise defaults to False.
+        parser.add_argument("--start-generate", action='store_true', dest='start_generate',
+                            help="Run the request output generator.")
+
+        # API Server related arguments
+        parser.add_argument("--serve", action='store_true',
+                            help="Start the API server for REST and WebSocket endpoints")
+        # vanta-state split: when set, core does NOT host the order-write state servers — they run in
+        # the separate vanta-state PM2 app (run_state_server.py) so a core restart doesn't kill them.
+        # Core starts only its own tier (subtensor_ops + contract + scoring + metagraph) and reaches
+        # the state servers via RPC clients. Default False = today's single-process behavior
+        # (backward-safe under an old run.sh). Requires run.sh to launch vanta-state first.
+        parser.add_argument("--split-state", action='store_true', dest='split_state', default=False,
+                            help="Run the order-write state servers in a separate vanta-state PM2 app "
+                                 "instead of in-core. Requires run.sh to launch vanta-state.")
+        # vanta-orders split: when set, this process does NOT serve the signed-request HTTP server or
+        # run the HL tracker — they run in the separate vanta-orders PM2 app (run_orders_server.py).
+        # Core passes this so a core restart doesn't drop order reception. Default True (serve_axon) =
+        # today's behavior (HTTP server + HL in-process).
+        parser.add_argument("--no-axon", action='store_false', dest='serve_axon', default=True,
+                            help="Do not serve the signed-request HTTP server or run the HL tracker in "
+                                 "this process (they run in the vanta-orders PM2 app). Requires run.sh "
+                                 "to launch it.")
+        # vanta-orders app role: this process IS the order-reception tier — it serves the HTTP server +
+        # runs HL and is a pure RPC CLIENT of vanta-state (order-write servers) and core (metagraph,
+        # scoring). It starts NO RPC servers, runs NO PositionSyncer/weight loop. Set by
+        # run_orders_server.py. Implies serve_axon=True. Default False = not the orders app.
+        parser.add_argument("--orders-app", action='store_true', dest='orders_app', default=False,
+                            help="Run as the vanta-orders app (HTTP server + HL + order path, client of "
+                                 "vanta-state/core; starts no servers). Set by run_orders_server.py.")
+        # Wallet-less identity for the vanta-state app (run_state_server.py). Core ignores it (it has
+        # a wallet); vanta-state passes the validator's ss58 so miner_account's ValidatorBroadcastBase
+        # gets its identity without loading a keypair. See NeuronContext.validator_hotkey_override.
+        parser.add_argument("--validator-hotkey", type=str, default=None, dest='validator_hotkey',
+                            help="Validator hotkey ss58 for the wallet-less vanta-state app; core ignores it.")
+        parser.add_argument("--api-host", type=str, default="127.0.0.1",
+                            help="Host address for the API server")
+        parser.add_argument("--api-rest-port", type=int, default=48888,
+                            help="Port for the REST API server")
+        parser.add_argument("--api-ws-port", type=int, default=8765,
+                            help="Port for the WebSocket server")
+
+        # (developer): Adds your custom arguments to the parser.
+        # Adds override arguments for network and netuid.
+        parser.add_argument("--netuid", type=int, default=1, help="The chain subnet uid.")
+        parser.add_argument("--collateral.chain_endpoint", type=str, default=None,
+                             help="ws:// or wss:// URL of a self-hosted subtensor node for collateral operations "
+                                  "only (e.g. ws://10.0.0.5:9944). The public endpoints are used while it is unhealthy.")
+
+        # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
+        add_subtensor_args(parser)
+        # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
+        add_logging_args(parser)
+        # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
+        add_wallet_args(parser)
+
+        # Add Slack webhook arguments
+        parser.add_argument(
+            "--slack-webhook-url",
+            type=str,
+            default=None,
+            help="Slack webhook URL for general notifications (optional)"
+        )
+        parser.add_argument(
+            "--slack-error-webhook-url",
+            type=str,
+            default=None,
+            help="Slack webhook URL for error notifications (optional, defaults to general webhook if not provided)"
+        )
+        # Adds signed-request HTTP server args i.e. --http.port ... (replaces bt.Axon.add_args)
+        add_http_server_args(parser)
+        # Activating the parser to read any command-line inputs.
+        # To print help message, run python3 neurons/validator.py --help
+        config = build_config(parser)
+        if config.logging.debug:
+            logger.setLevel(logging.DEBUG)
+        if config.logging.trace:
+            logger.setLevel(logging.DEBUG)
+
+        # Set up logging directory. Logging captures events for diagnosis or understanding
+        # the validator's behavior.
+        config.full_path = os.path.expanduser(
+            "{}/{}/{}/netuid{}/{}".format(
+                config.logging.logging_dir,
+                config.wallet.name,
+                config.wallet.hotkey,
+                config.netuid,
+                "validator",
+            )
+        )
+        return config
+
     @staticmethod
     def get_secrets(running_unit_tests=False, secrets_path=None) -> Dict:
         """

@@ -30,7 +30,7 @@ from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-import template.protocol
+import vanta_protocol
 from shared_objects.log import logger
 
 
@@ -211,7 +211,7 @@ class AssetSelectionServer(RPCServerBase):
 
     def receive_asset_selection_update_rpc(self, asset_selection_data: dict, sender_hotkey: str = None) -> bool:
         """
-        Process an incoming AssetSelection synapse and update miner asset selection (RPC method).
+        Process an incoming AssetSelection update and update miner asset selection (RPC method).
 
         Args:
             asset_selection_data: Dictionary containing hotkey, asset selection
@@ -237,39 +237,37 @@ class AssetSelectionServer(RPCServerBase):
 
     def receive_asset_selection_rpc(
         self,
-        synapse: template.protocol.AssetSelection
-    ) -> template.protocol.AssetSelection:
+        request: vanta_protocol.BroadcastRequest,
+        caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive asset selection synapse (RPC method for axon handler).
-
-        This is called by the validator's axon when receiving an AssetSelection synapse.
+        Receive an AssetSelection broadcast from another validator (RPC method for the HTTP route handler).
 
         Args:
-            synapse: AssetSelection synapse from another validator
+            request: BroadcastRequest from the sending validator
+            caller_hotkey: The sending validator's hotkey, verified by the auth layer
 
         Returns:
-            Updated synapse with success/error status
+            BroadcastResponse with success/error status
         """
         try:
-            sender_hotkey = synapse.dendrite.hotkey
-            logger.info(f"[ASSET_SERVER] Received AssetSelection synapse from validator hotkey [{sender_hotkey}]")
-            success = self._manager.receive_asset_selection_update(synapse.asset_selection, sender_hotkey)
+            logger.info(f"[ASSET_SERVER] Received AssetSelection request from validator hotkey [{caller_hotkey}]")
+            success = self._manager.receive_asset_selection_update(request.payload, caller_hotkey)
 
             if success:
-                synapse.successfully_processed = True
-                synapse.error_message = ""
-                logger.info(f"[ASSET_SERVER] Successfully processed AssetSelection synapse from {sender_hotkey}")
+                logger.info(f"[ASSET_SERVER] Successfully processed AssetSelection request from {caller_hotkey}")
+                return vanta_protocol.BroadcastResponse(successfully_processed=True, error_message="")
             else:
-                synapse.successfully_processed = False
-                synapse.error_message = "Failed to process asset selection"
-                logger.warning(f"[ASSET_SERVER] Failed to process AssetSelection synapse from {sender_hotkey}")
+                logger.warning(f"[ASSET_SERVER] Failed to process AssetSelection request from {caller_hotkey}")
+                return vanta_protocol.BroadcastResponse(
+                    successfully_processed=False, error_message="Failed to process asset selection"
+                )
 
         except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing asset selection: {str(e)}"
             logger.error(f"[ASSET_SERVER] Exception in receive_asset_selection: {e}")
-
-        return synapse
+            return vanta_protocol.BroadcastResponse(
+                successfully_processed=False, error_message=f"Error processing asset selection: {str(e)}"
+            )
 
     def clear_asset_selections_for_test_rpc(self) -> None:
         """

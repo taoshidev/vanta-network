@@ -37,7 +37,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import bittensor as bt
 import time
-import scalecodec
 
 from time_util.time_util import TimeUtil
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -695,72 +694,34 @@ class EmissionsLedgerManager:
 
     def query_alpha_to_tao_rate(self, block_number: int, block_hash: Optional[str] = None) -> float:
         """
-        Query the alpha-to-TAO conversion rate at a specific block.
+        Query the alpha-to-TAO (spot price) conversion rate at a specific block.
         Raises exception if conversion rate unavailable (fast fail).
 
-        The conversion rate is calculated from subnet pool reserves:
-        alpha_price_in_tao = TAO_reserve / Alpha_reserve
+        bt.Subtensor has no `.substrate` attribute in v11 (confirmed via inspection) - raw
+        SubnetTAO/SubnetAlphaIn storage queries are gone. The named "alpha_prices" read
+        (bittensor.reads.prices.alpha_prices) returns the same ratio (spot TAO-per-alpha for
+        every netuid) in one runtime-API call, pinned to a historical block via `.at(block)`.
 
         Args:
             block_number: Block number to query
-            block_hash: Optional pre-fetched block hash (avoids redundant query)
+            block_hash: Unused - kept for caller signature compatibility (v11 reads pin to a
+                block NUMBER directly; no separate block-hash lookup is needed any more)
 
         Returns:
             Alpha-to-TAO conversion rate
 
         Raises:
-            ValueError: If block hash, pool data, or conversion rate unavailable
+            ValueError: If the rate is unavailable for this netuid at that block
         """
         # Ensure subtensor is initialized
         self.instantiate_non_pickleable_components()
 
-        # Get block hash if not provided
-        if block_hash is None:
-            # Rate limit before block hash query
-            self._rate_limit()
-            block_hash = self.subtensor.substrate.get_block_hash(block_number)
-
-        if not block_hash:
-            raise ValueError(f"Could not get hash for block {block_number}")
-
-        # Rate limit before SubnetTAO query
         self._rate_limit()
+        prices = self.subtensor.at(block_number).read("alpha_prices")
+        alpha_to_tao_rate = prices.get(self.netuid)
 
-        # Query TAO reserve
-        tao_reserve_query = self.subtensor.substrate.query(
-            module='SubtensorModule',
-            storage_function='SubnetTAO',
-            params=[self.netuid],
-            block_hash=block_hash
-        )
-
-        # Rate limit before SubnetAlphaIn query
-        self._rate_limit()
-
-        # Query Alpha reserve
-        alpha_reserve_query = self.subtensor.substrate.query(
-            module='SubtensorModule',
-            storage_function='SubnetAlphaIn',
-            params=[self.netuid],
-            block_hash=block_hash
-        )
-
-        if tao_reserve_query is None or alpha_reserve_query is None:
-            raise ValueError(f"Pool reserve data not available at block {block_number}")
-
-        # Extract values (stored in RAO)
-        tao_reserve_rao = float(tao_reserve_query.value if hasattr(tao_reserve_query, 'value') else tao_reserve_query)
-        alpha_reserve_rao = float(alpha_reserve_query.value if hasattr(alpha_reserve_query, 'value') else alpha_reserve_query)
-
-        if alpha_reserve_rao == 0:
-            raise ValueError(f"Alpha reserve is zero at block {block_number}")
-
-        # Convert from RAO to tokens (both use 1e9 divisor)
-        tao_in_pool = tao_reserve_rao / 1e9
-        alpha_in_pool = alpha_reserve_rao / 1e9
-
-        # Calculate alpha price in TAO
-        alpha_to_tao_rate = tao_in_pool / alpha_in_pool
+        if alpha_to_tao_rate is None:
+            raise ValueError(f"Alpha price not available for netuid {self.netuid} at block {block_number}")
 
         return alpha_to_tao_rate
 
@@ -797,21 +758,26 @@ class EmissionsLedgerManager:
     def _query_tao_balance_at_block(
         self,
         hotkey_ss58: str,
-        block_hash: str
+        block_number: int
     ) -> float:
         """
-        Query free TAO balance for a hotkey at a specific block.
+        Query free TAO balance for an account at a specific block.
+
+        bt.Subtensor has no `.substrate` attribute in v11 - the named "balance" read
+        (bittensor.reads.accounts.balance; despite the `coldkey_ss58` param name it works for
+        any AccountId, hotkey included - same System.Account storage underneath) replaces the
+        raw System.Account query, pinned to a historical block via `.at(block)`.
 
         Args:
-            hotkey_ss58: SS58 address of the hotkey
-            block_hash: Block hash to query at
+            hotkey_ss58: SS58 address of the account
+            block_number: Block number to query at (the caller previously passed a block hash;
+                v11 reads pin to a block NUMBER directly)
 
         Returns:
             TAO balance in tokens (not RAO)
 
         Raises:
-            ValueError: If query returns None or invalid data
-            Exception: If substrate query fails
+            Exception: If the read fails
         """
         # In test mode, return mock balance
         if self.running_unit_tests:
@@ -820,32 +786,13 @@ class EmissionsLedgerManager:
         self._rate_limit()
 
         try:
-            account_info = self.subtensor.substrate.query(
-                module='System',
-                storage_function='Account',
-                params=[hotkey_ss58],
-                block_hash=block_hash
-            )
+            balance = self.subtensor.at(block_number).read("balance", coldkey_ss58=hotkey_ss58)
         except Exception as e:
             raise Exception(
-                f"Failed to query TAO balance for {hotkey_ss58} at block {block_hash}: {e}"
+                f"Failed to query TAO balance for {hotkey_ss58} at block {block_number}: {e}"
             )
 
-        if account_info is None:
-            raise ValueError(
-                f"TAO balance query returned None for {hotkey_ss58} at block {block_hash}"
-            )
-
-        try:
-            account_data = account_info.value if hasattr(account_info, 'value') else account_info
-            free_balance_rao = account_data.get('data', {}).get('free', 0)
-            tao_balance = float(free_balance_rao) / 1e9
-        except Exception as e:
-            raise ValueError(
-                f"Failed to parse TAO balance from account_info for {hotkey_ss58}: {e}"
-            )
-
-        return tao_balance
+        return float(balance.tao)
 
     def _get_coldkey_for_hotkey(self, hotkey_ss58: str) -> str:
         """
@@ -878,20 +825,16 @@ class EmissionsLedgerManager:
                 self.emissions_ledgers[hotkey_ss58].coldkey = mock_coldkey
             return mock_coldkey
 
-        # Query substrate for coldkey
+        # bt.Subtensor has no `.substrate` attribute in v11 - the named "hotkey_owner" read
+        # (bittensor.reads.neurons.hotkey_owner) replaces the raw SubtensorModule.Owner query
+        # and already returns a plain string (no `.value` unwrapping needed).
         self._rate_limit()
 
         try:
-            coldkey = self.subtensor.substrate.query(
-                module='SubtensorModule',
-                storage_function='Owner',
-                params=[hotkey_ss58]
-            )
+            coldkey_str = self.subtensor.read("hotkey_owner", hotkey_ss58=hotkey_ss58)
 
-            if not coldkey:
+            if not coldkey_str:
                 raise ValueError(f"No coldkey found for hotkey {hotkey_ss58}")
-
-            coldkey_str = str(coldkey.value if hasattr(coldkey, 'value') else coldkey)
 
             # Update ledger with coldkey if ledger exists
             if hotkey_ss58 in self.emissions_ledgers:
@@ -938,16 +881,19 @@ class EmissionsLedgerManager:
             # Rate limit before stake query
             self._rate_limit()
 
-            # Query the alpha stake using get_stake()
-            stake_balance = self.subtensor.get_stake(
+            # bt.Subtensor has no get_stake() method in v11 - the equivalent is the named "stake"
+            # read (bittensor.reads.staking.stake), pinned to a historical block via .at(block).
+            stake_balance = self.subtensor.at(block_number).read(
+                "stake",
                 coldkey_ss58=coldkey,
                 hotkey_ss58=hotkey_ss58,
                 netuid=self.netuid,
-                block=block_number
             )
 
-            # Convert Balance object to float (note: .tao represents ALPHA when netuid != 0)
-            alpha_balance = float(stake_balance.tao)
+            # Balance.tao raises on a non-zero-netuid (alpha) Balance in v11 (verified interactively) -
+            # .rao is unit-agnostic (1 token = 1e9 rao regardless of denomination), so use that instead
+            # of the old `.tao` (which, under v10, returned the raw token amount for any denomination).
+            alpha_balance = float(stake_balance.rao) / 1e9
 
         except Exception as e:
             raise Exception(
@@ -973,18 +919,11 @@ class EmissionsLedgerManager:
 
             logger.info(f"Initializing subtensor connection to {self.archive_endpoint}, netuid: {self.netuid}")
 
-            parser = argparse.ArgumentParser()
-            bt.Subtensor.add_args(parser)
-            config = bt.Config(parser, args=[])
-
-            # Override the chain endpoint
-            config.subtensor.chain_endpoint = self.archive_endpoint
-
-            # Clear network so it uses our custom endpoint
-            config.subtensor.network = None
-
-            self.subtensor = bt.Subtensor(config=config)
-            logger.info(f"Connected to: {self.subtensor.chain_endpoint}")
+            # bt.Subtensor (v11) takes no `config=`/add_args at all - any ws://*/wss:// URL is
+            # accepted directly as `network`, which is exactly what the old chain_endpoint override
+            # was for, so no argparse/bt.Config scaffolding is needed here at all.
+            self.subtensor = bt.Subtensor(network=self.archive_endpoint)
+            logger.info(f"Connected to: {self.archive_endpoint}")
 
         # Initialize live price fetcher client if not already initialized
         if self.live_price_fetcher is None:
@@ -1023,27 +962,22 @@ class EmissionsLedgerManager:
         midpoint_block = (chunk_start_block + chunk_end_block) // 2
 
         try:
-            # Get block hash for midpoint block
+            # Query alpha-to-TAO rate directly at the midpoint block (v11 reads pin to a block
+            # NUMBER - no separate block-hash lookup needed any more)
             self._rate_limit()
-            midpoint_block_hash = self.subtensor.substrate.get_block_hash(midpoint_block)
+            avg_alpha_to_tao_rate = self.query_alpha_to_tao_rate(midpoint_block)
 
-            if midpoint_block_hash:
-                # Query alpha-to-TAO rate
-                avg_alpha_to_tao_rate = self.query_alpha_to_tao_rate(
+            # Get block timestamp for TAO/USD rate - `.timestamp(block=)` replaces the old
+            # get_block_hash + get_block + _extract_block_timestamp dance
+            self._rate_limit()
+            block_timestamp_dt = self.subtensor.timestamp(block=midpoint_block)
+            if block_timestamp_dt:
+                block_timestamp_ms = int(block_timestamp_dt.timestamp() * 1000)
+                avg_tao_to_usd_rate = self.query_tao_to_usd_rate(
                     midpoint_block,
-                    block_hash=midpoint_block_hash
+                    block_timestamp_ms=block_timestamp_ms
                 )
-
-                # Get block timestamp for TAO/USD rate
-                self._rate_limit()
-                block_data = self.subtensor.substrate.get_block(block_hash=midpoint_block_hash)
-                if block_data:
-                    block_timestamp_ms = self._extract_block_timestamp(block_data, midpoint_block)
-                    avg_tao_to_usd_rate = self.query_tao_to_usd_rate(
-                        midpoint_block,
-                        block_timestamp_ms=block_timestamp_ms
-                    )
-                    return avg_alpha_to_tao_rate, avg_tao_to_usd_rate
+                return avg_alpha_to_tao_rate, avg_tao_to_usd_rate
         except Exception as e:
             logger.warning(
                 f"Failed to query rates for zero-emission chunk: {e}. "
@@ -1188,7 +1122,7 @@ class EmissionsLedgerManager:
         # Get current block for estimating block ranges
         if not self.running_unit_tests:
             self._rate_limit()
-            current_block = self.subtensor.get_current_block()
+            current_block = self.subtensor.block  # .block is a property in v11, not a method
         else:
             # In test mode, estimate current block based on time
             # Bittensor blocks are ~12 seconds, assume we started at block 1M
@@ -1280,18 +1214,8 @@ class EmissionsLedgerManager:
                     chunk_end_block
                 )
 
-            # Query block hash for balance snapshots at checkpoint end
-            if self.running_unit_tests:
-                # In test mode, use a mock block hash
-                end_block_hash = f"0x{'0' * 64}"  # Mock hash
-            else:
-                self._rate_limit()
-                end_block_hash = self.subtensor.substrate.get_block_hash(chunk_end_block)
-                if not end_block_hash:
-                    raise ValueError(
-                        f"Failed to get block_hash for block {chunk_end_block} "
-                        f"(chunk {current_chunk_start_ms}-{current_chunk_end_ms})"
-                    )
+            # v11 reads pin to a block NUMBER directly - no separate block-hash lookup needed.
+            end_block_hash = chunk_end_block
 
             # Single loop: create checkpoints for ALL hotkeys in all_hotkeys_seen
             # (includes both hotkeys with emissions and hotkeys without emissions)
@@ -1396,58 +1320,36 @@ class EmissionsLedgerManager:
                 total_tao = ledger.get_cumulative_emissions_tao()
                 logger.info(f"  {hotkey[:16]}...{hotkey[-8:]}: {total_alpha:.6f} alpha (~{total_tao:.6f} TAO)")
 
-    def _get_uid_to_hotkey_at_block(self, block_hash: str) -> Dict[int, str]:
+    def _get_uid_hotkey_and_emission_at_block(self, block_number: int) -> tuple[Dict[int, str], Dict[int, float]]:
         """
-        Query UID-to-hotkey mapping at a specific historical block.
+        Query UID-to-hotkey mapping AND per-UID emission (in RAO) at a specific historical block,
+        in one runtime-API call.
+
+        bt.Subtensor has no `.substrate` attribute in v11 - the raw SubtensorModule.Keys
+        query_map and the raw SubtensorModule.Emission vector query are both gone. The named
+        "neurons" read (bittensor.reads.neurons.neurons, the metagraph fast path) returns every
+        neuron's uid/hotkey in one call; `Neuron.raw["emission"]` carries the same per-neuron
+        emission the old raw Emission vector did, pinned to a historical block via `.at(block)`.
 
         Args:
-            block_hash: Block hash to query at
+            block_number: Block number to query at
 
         Returns:
-            Dictionary mapping UID to hotkey at that block
+            (uid_to_hotkey, emission_rao_by_uid)
         """
         # Ensure subtensor is initialized
         self.instantiate_non_pickleable_components()
 
-        # Rate limit before query_map
         self._rate_limit()
+        neuron_list = self.subtensor.at(block_number).read("neurons", netuid=self.netuid, lite=True)
 
-        # Query all Keys entries for this netuid at once (much more efficient than one query per UID)
-        keys_map = self.subtensor.substrate.query_map(
-            module='SubtensorModule',
-            storage_function='Keys',
-            params=[self.netuid],
-            block_hash=block_hash
-        )
-
-        # Convert result to dict[uid -> hotkey]
         uid_to_hotkey = {}
-        for key, value in keys_map:
-            # Key is the UID directly (integer)
-            uid = int(key)
+        emission_rao_by_uid = {}
+        for n in neuron_list:
+            uid_to_hotkey[n.uid] = n.hotkey
+            emission_rao_by_uid[n.uid] = float(n.raw.get("emission", 0) or 0)
 
-            # Value is a ScaleObj containing the hotkey as bytes
-            # Convert to SS58 address string
-            if hasattr(value, 'value'):
-                # value.value is a list of tuples with byte values
-                # Example: [(24, 91, 223, ...)] - extract bytes
-                if isinstance(value.value, list) and len(value.value) > 0:
-                    hotkey_bytes = bytes(value.value[0]) if isinstance(value.value[0], (list, tuple)) else bytes(value.value)
-                else:
-                    hotkey_bytes = bytes(value.value)
-
-                # Convert bytes to SS58 address
-                hotkey = scalecodec.ss58_encode(hotkey_bytes.hex(), ss58_format=42)
-
-                if hotkey:
-                    uid_to_hotkey[uid] = hotkey
-            else:
-                # Fallback: try to use value as-is
-                hotkey = str(value)
-                if hotkey:
-                    uid_to_hotkey[uid] = hotkey
-
-        return uid_to_hotkey
+        return uid_to_hotkey, emission_rao_by_uid
 
     def _get_mock_emissions_for_tests(self, all_hotkeys_seen: Optional[set] = None) -> Dict[str, tuple[float, float, float, float, float, int]]:
         """
@@ -1554,51 +1456,25 @@ class EmissionsLedgerManager:
         previous_tao_to_usd_rate = None
 
         for i, block in enumerate(sampled_blocks):
-            # Rate limit before block hash query
+            # v11's bt.Subtensor has no `.substrate` attribute - reads pin to a block NUMBER
+            # directly, so no separate block-hash lookup is needed.
             self._rate_limit()
+            block_timestamp_dt = self.subtensor.timestamp(block=block)
+            if not block_timestamp_dt:
+                raise ValueError(f"Timestamp query failed for block {block}")
+            block_timestamp_ms = int(block_timestamp_dt.timestamp() * 1000)
 
-            # Query block hash ONCE for this block
-            block_hash = self.subtensor.substrate.get_block_hash(block)
-            if not block_hash:
-                raise ValueError(f"Block hash query failed for block {block}")
-
-            # Rate limit before block data query
-            self._rate_limit()
-
-            # Query block data ONCE for this block (needed for timestamp extraction)
-            block_data = self.subtensor.substrate.get_block(block_hash=block_hash)
-            if not block_data:
-                raise ValueError(f"Block data query failed for block {block}")
-
-            # Extract timestamp from block data
-            block_timestamp_ms = self._extract_block_timestamp(block_data, block)
-
-            # Query UID-to-hotkey mapping AT THIS BLOCK (rate limited inside method)
-            current_uid_to_hotkey = self._get_uid_to_hotkey_at_block(block_hash)
+            # Query UID-to-hotkey mapping AND per-UID emission AT THIS BLOCK in one call
+            # (rate limited inside method)
+            current_uid_to_hotkey, emission_rao_by_uid = self._get_uid_hotkey_and_emission_at_block(block)
 
             # Track new hotkeys
             for hotkey in current_uid_to_hotkey.values():
                 if hotkey not in all_hotkeys_seen:
                     all_hotkeys_seen.add(hotkey)
 
-            # Rate limit before Emission query
-            self._rate_limit()
-
-            # Query ALL emissions at once (entire vector)
-            emission_query = self.subtensor.substrate.query(
-                module='SubtensorModule',
-                storage_function='Emission',
-                params=[self.netuid],
-                block_hash=block_hash
-            )
-
-            if emission_query is not None:
-                emissions_list = emission_query.value if hasattr(emission_query, 'value') else emission_query
-            else:
-                emissions_list = []
-
-            # Query alpha-to-TAO rate ONCE (shared by all hotkeys) - pass block_hash to avoid redundant query
-            alpha_to_tao_rate = self.query_alpha_to_tao_rate(block, block_hash=block_hash)
+            # Query alpha-to-TAO rate ONCE (shared by all hotkeys)
+            alpha_to_tao_rate = self.query_alpha_to_tao_rate(block)
 
             # Query TAO-to-USD rate ONCE (shared by all hotkeys) - pass timestamp to avoid redundant query
             tao_to_usd_rate = self.query_tao_to_usd_rate(block, block_timestamp_ms=block_timestamp_ms)
@@ -1611,17 +1487,9 @@ class EmissionsLedgerManager:
             # Process emissions for each UID -> hotkey (at this block)
             current_emissions_by_hotkey = defaultdict(float)
             for uid, hotkey in current_uid_to_hotkey.items():
-                # Extract emission for this UID from the vector
-                if isinstance(emissions_list, (list, tuple)) and uid < len(emissions_list):
-                    emission_rao = float(emissions_list[uid])
-                    emission_alpha = emission_rao / 1e9  # Convert RAO to alpha
-                    emission_per_block = emission_alpha / 360  # Convert per-tempo to per-block
-                elif isinstance(emissions_list, dict) and uid in emissions_list:
-                    emission_rao = float(emissions_list[uid])
-                    emission_alpha = emission_rao / 1e9
-                    emission_per_block = emission_alpha / 360
-                else:
-                    emission_per_block = 0.0
+                emission_rao = emission_rao_by_uid.get(uid, 0.0)
+                emission_alpha = emission_rao / 1e9  # Convert RAO to alpha
+                emission_per_block = emission_alpha / 360  # Convert per-tempo to per-block
 
                 current_emissions_by_hotkey[hotkey] += emission_per_block
 
