@@ -185,6 +185,7 @@ validation/miners/
 validation/outputs/
 validation/plagiarism/
 validation/tmp/
+validation/collateral_operations.jsonl
 validation/*.bak*
 tests/validation/miners/
 tests/validation/plagiarism/

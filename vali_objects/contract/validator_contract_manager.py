@@ -11,10 +11,15 @@ This manager handles all collateral operations including:
 The manager contains NO RPC infrastructure - that lives in ContractServer.
 This is pure business logic that can be tested independently.
 """
+import json
+import os
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from contextlib import contextmanager
 import requests
 from collateral_sdk import CollateralManager, Network
+from collateral_sdk.errors import CriticalError
 from typing import Dict, Any, Optional
 import time
 from time_util.time_util import TimeUtil
@@ -24,6 +29,7 @@ from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 import template.protocol
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -46,6 +52,10 @@ from shared_objects.log import logger
 # ==================== Constants ====================
 
 TARGET_MS = 1782338400000
+
+
+class CollateralBusyError(RuntimeError):
+    """Another collateral transaction held the signing lock for too long; nothing was sent to the chain."""
 
 
 # ==================== Manager Implementation ====================
@@ -226,6 +236,14 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             max_workers=2, thread_name_prefix="owner-query")
         self._ownership_failure_ts: Dict[tuple[str, str], float] = {}
 
+        # Journal of every collateral transaction (see _journal). Not written in unit tests.
+        self._journal_path = None if running_unit_tests else os.path.join(
+            ValiBkpUtils.get_vali_dir(running_unit_tests), self.JOURNAL_FILE_NAME)
+        if not running_unit_tests:
+            self._report_unfinished_operations()
+            threading.Thread(target=self._monitor_chain_writes, daemon=True,
+                             name="collateral_write_monitor").start()
+
         self.setup()
 
     # ==================== Properties ====================
@@ -289,13 +307,157 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         logger.info(f"Account size refresh completed for {update_count} miners")
 
     def health_check(self) -> dict:
-        """Health check for monitoring."""
+        """Health check for monitoring: "degraded" while a collateral transaction has held the signing lock
+        longer than CHAIN_WRITE_STUCK_S, which is what a hung chain connection looks like from outside."""
+        active = ValidatorContractManager._chain_write_active
+        age_s = time.time() - active["started_s"] if active else 0.0
         return {
-            "status": "ok",
+            "status": "degraded" if age_s > self.CHAIN_WRITE_STUCK_S else "ok",
             "timestamp_ms": TimeUtil.now_in_millis(),
             # collateral_sdk < 1.0.12 has no endpoint overrides and always uses the network's endpoint
             "collateral_endpoint": getattr(self.collateral_manager, "evm_endpoint", self._collateral_network.evm_endpoint),
+            "chain_write_in_flight": active["operation"] if active else None,
+            "chain_write_hotkey": active["hotkey"] if active else None,
+            "chain_write_age_s": round(age_s, 1),
+            "last_chain_success_ms": ValidatorContractManager._last_chain_success_ms,
         }
+
+    # ==================== Chain writes: one at a time, journaled ====================
+    #
+    # Every collateral transaction is signed by the same two keys (the contract owner's EVM key and the
+    # vault coldkey) and, on the substrate side, sent over the SDK's one websocket. The RPC server runs
+    # each caller on its own thread, so without this lock a deposit, a withdrawal and a slash could
+    # fetch the same nonce (one then never mines) or read each other's replies off the socket (the
+    # service then hangs until restarted). Class-level: there is one signer per process.
+    _CHAIN_WRITE_LOCK = threading.RLock()
+    _chain_write_active: Optional[dict] = None
+    _last_chain_success_ms: Optional[int] = None
+    # How long a transaction waits for the one ahead of it before giving up, having sent nothing
+    CHAIN_WRITE_LOCK_TIMEOUT_S = 240.0
+    # A transaction holding the lock this long is reported as stuck (matches the RPC chain-call timeout)
+    CHAIN_WRITE_STUCK_S = ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S
+    CHAIN_WRITE_MONITOR_INTERVAL_S = 60.0
+
+    @contextmanager
+    def _chain_write(self, operation: str, hotkey: Optional[str] = None):
+        """Hold the signing lock for one collateral transaction. Raises CollateralBusyError, before
+        anything is sent, when the transaction ahead does not finish in CHAIN_WRITE_LOCK_TIMEOUT_S."""
+        cls = ValidatorContractManager
+        if not cls._CHAIN_WRITE_LOCK.acquire(timeout=self.CHAIN_WRITE_LOCK_TIMEOUT_S):
+            active = cls._chain_write_active or {}
+            raise CollateralBusyError(
+                f"Another collateral transaction ({active.get('operation')} for {active.get('hotkey')}) is still "
+                f"in progress after {self.CHAIN_WRITE_LOCK_TIMEOUT_S:.0f}s; nothing was sent, try again shortly")
+        previous = cls._chain_write_active
+        cls._chain_write_active = {"operation": operation, "hotkey": hotkey, "started_s": time.time(),
+                                   "alerted": False}
+        try:
+            yield
+            cls._last_chain_success_ms = TimeUtil.now_in_millis()
+        finally:
+            cls._chain_write_active = previous
+            cls._CHAIN_WRITE_LOCK.release()
+
+    def _monitor_chain_writes(self):
+        """Alert once when a collateral transaction has held the signing lock for CHAIN_WRITE_STUCK_S."""
+        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        while not ShutdownCoordinator.is_shutdown():
+            time.sleep(self.CHAIN_WRITE_MONITOR_INTERVAL_S)
+            try:
+                active = ValidatorContractManager._chain_write_active
+                if not active or active["alerted"]:
+                    continue
+                age_s = time.time() - active["started_s"]
+                if age_s > self.CHAIN_WRITE_STUCK_S:
+                    active["alerted"] = True
+                    self._alert(
+                        f"Collateral {active['operation']} for {active['hotkey']} has been running for "
+                        f"{age_s:.0f}s and is blocking every other collateral transaction; the chain "
+                        f"connection is likely hung. Check {self.JOURNAL_FILE_NAME} before restarting.")
+            except Exception as e:
+                logger.error(f"Collateral write monitor error: {e}")
+
+    def _alert(self, message: str) -> None:
+        """Log an error that needs an operator and send it to Slack."""
+        logger.error(message)
+        notifier = getattr(self, "_slack_notifier", None)
+        if notifier:
+            try:
+                notifier.send_message(f"🚨 {message}", level="error", bypass_cooldown=True)
+            except Exception as e:
+                logger.error(f"Failed to send collateral alert to Slack: {e}")
+
+    # One JSON line per event of each collateral transaction: "started" before anything is sent, then
+    # "succeeded", "failed" (the SDK reverted or nothing landed) or "critical" (funds may be in limbo).
+    # A "started" with no outcome is a transaction a restart or crash cut short; it is reported at the
+    # next startup, since by then nothing in memory knows which step it reached.
+    JOURNAL_FILE_NAME = "collateral_operations.jsonl"
+    _journal_lock = threading.Lock()
+
+    def _journal(self, op_id: str, operation: str, event: str, hotkey: Optional[str] = None, **details) -> None:
+        path = getattr(self, "_journal_path", None)
+        if not path:
+            return
+        try:
+            record = {"op_id": op_id, "operation": operation, "event": event, "hotkey": hotkey,
+                      "time_ms": TimeUtil.now_in_millis(), **details}
+            with self._journal_lock:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, default=str) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+        except Exception as e:
+            logger.error(f"Failed to journal collateral {operation} {event} for {hotkey}: {e}")
+
+    @staticmethod
+    def _new_op_id() -> str:
+        return uuid.uuid4().hex[:12]
+
+    def _record_failure(self, op_id: str, operation: str, hotkey: Optional[str], error: Exception) -> None:
+        """Journal a failed transaction; a CriticalError (the SDK could neither finish nor revert, so funds
+        may sit in the vault uncredited or be credited twice) also alerts an operator."""
+        if isinstance(error, CriticalError):
+            self._journal(op_id, operation, "critical", hotkey, error=str(error))
+            self._alert(f"Collateral {operation} for {hotkey} needs manual reconciliation (op {op_id}): {error}")
+        else:
+            self._journal(op_id, operation, "failed", hotkey, error=str(error))
+
+    def _unfinished_operations(self) -> list[dict]:
+        """The journal's transactions that started and never recorded an outcome."""
+        path = getattr(self, "_journal_path", None)
+        if not path or not os.path.exists(path):
+            return []
+        last_by_op: Dict[str, dict] = {}
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                    last_by_op[record["op_id"]] = record
+                except Exception:
+                    continue
+        return [record for record in last_by_op.values() if record.get("event") == "started"]
+
+    def _report_unfinished_operations(self) -> None:
+        """At startup: alert on every transaction the previous process left without an outcome, then mark
+        it so it is reported once."""
+        try:
+            unfinished = self._unfinished_operations()
+            if not unfinished:
+                return
+            lines = [
+                f"- {r['operation']} for {r.get('hotkey')} started {TimeUtil.millis_to_formatted_date_str(r['time_ms'])} UTC"
+                f" (op {r['op_id']}, " + ", ".join(
+                    f"{k}={v}" for k, v in r.items()
+                    if k not in ("op_id", "operation", "event", "hotkey", "time_ms")) + ")"
+                for r in unfinished]
+            self._alert(
+                f"{len(unfinished)} collateral transaction(s) were cut short by a restart and their outcome is "
+                f"unknown; compare each with the chain (vault stake and contract balance):\n" + "\n".join(lines))
+            for r in unfinished:
+                self._journal(r["op_id"], r["operation"], "abandoned", r.get("hotkey"))
+        except Exception as e:
+            logger.error(f"Failed to check the collateral journal for unfinished transactions: {e}")
 
     # Collateral node failover (--collateral.chain_endpoint)
     COLLATERAL_ENDPOINT_CHECK_INTERVAL_S = 60.0
@@ -418,65 +580,42 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         Args:
             extrinsic_hex (str): Hex-encoded extrinsic data
-            amount (float): Amount in theta tokens
-            miner_address (str): Miner's SS58 address
 
         Returns:
             Dict[str, Any]: Result of deposit operation
         """
+        op_id = self._new_op_id()
+        miner_hotkey = None
+        started = False
         try:
             logger.info("Received deposit request")
-            # Decode and validate the extrinsic
-            try:
-                encoded_extrinsic = bytes.fromhex(extrinsic_hex)
-                extrinsic = self.collateral_manager.decode_extrinsic(encoded_extrinsic)
-                logger.info("Extrinsic decoded successfully")
-            except Exception as e:
-                error_msg = f"Invalid extrinsic data: {str(e)}"
-                logger.error(error_msg)
-                return {
-                    "successfully_processed": False,
-                    "error_message": error_msg
-                }
+            # The decode reads the chain metadata over the SDK's websocket, so it runs under the signing lock too
+            with self._chain_write("deposit"):
+                try:
+                    encoded_extrinsic = bytes.fromhex(extrinsic_hex)
+                    extrinsic = self.collateral_manager.decode_extrinsic(encoded_extrinsic)
+                    logger.info("Extrinsic decoded successfully")
+                except Exception as e:
+                    error_msg = f"Invalid extrinsic data: {str(e)}"
+                    logger.error(error_msg)
+                    return {
+                        "successfully_processed": False,
+                        "error_message": error_msg
+                    }
 
-            # Execute the deposit through the collateral manager
-            try:
                 miner_hotkey = next(
                     arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "hotkey")
                 deposit_amount = next(
                     arg["value"] for arg in extrinsic.value["call"]["call_args"] if arg["name"] == "alpha_amount")
                 deposit_amount_theta = self.to_theta(deposit_amount)
+                ValidatorContractManager._chain_write_active["hotkey"] = miner_hotkey
 
-                # # Check collateral balance limit before processing
-                # try:
-                #     current_balance_theta = self.to_theta(self.collateral_manager.balance_of(miner_hotkey))
-                #
-                #     if current_balance_theta + deposit_amount_theta > self.max_theta:
-                #         error_msg = (f"Deposit would exceed maximum balance limit. "
-                #                      f"Current: {current_balance_theta:.2f} Theta, "
-                #                      f"Deposit: {deposit_amount_theta:.2f} Theta, "
-                #                      f"Limit: {self.max_theta} Theta")
-                #         logger.warning(error_msg)
-                #         return {
-                #             "successfully_processed": False,
-                #             "error_message": error_msg
-                #         }
-                #
-                # except Exception as e:
-                #     logger.error(f"Failed to check balance limit: {e}")
-                #     return {
-                #         "successfully_processed": False,
-                #         "error_message": e
-                #     }
-
-                # # All positions must be closed before a miner can deposit or withdraw
-                # if len(self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)) > 0:
-                #     return {
-                #         "successfully_processed": False,
-                #         "error_message": "Miner has open positions, please close all positions before depositing or withdrawing collateral"
-                #     }
-
-                logger.info(f"Processing deposit for: {deposit_amount_theta} Theta to miner: {miner_hotkey}")
+                logger.info(f"Processing deposit for: {deposit_amount_theta} Theta to miner: {miner_hotkey} (op {op_id})")
+                # The extrinsic hash and the coldkey identify the stake transfer on chain, should it need tracing
+                self._journal(op_id, "deposit", "started", miner_hotkey, amount_theta=deposit_amount_theta,
+                              extrinsic_hash=self._extrinsic_hash(extrinsic),
+                              coldkey=extrinsic.value.get("address"))
+                started = True
                 owner_address = ValiUtils.get_secret("collateral_owner_address")
                 owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
                 vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
@@ -495,36 +634,53 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     del owner_private_key
                     del vault_password
 
-                deposited_theta = self.to_theta(deposited_balance.rao)
-                msg = f"Deposit successful: {deposited_theta} Theta deposited to miner: {miner_hotkey}"
-                logger.info(msg)
-                self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
-                self._entity_collateral_client.offset_collateral_cache(miner_hotkey, deposited_theta)
-                return {
-                    "successfully_processed": True,
-                    "error_message": ""
-                }
-
-            except Exception as e:
-                error_msg = f"Deposit execution failed: {str(e)}"
-                logger.error(error_msg)
-                if "miner_hotkey" in locals():
-                    try:
-                        self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
-                    except Exception as refresh_error:
-                        logger.error(f"Failed to refresh account size for {miner_hotkey} after deposit failure: {refresh_error}")
-                return {
-                    "successfully_processed": False,
-                    "error_message": error_msg
-                }
-
         except Exception as e:
-            error_msg = f"Deposit processing error: {str(e)}"
+            error_msg = f"Deposit execution failed: {str(e)}"
             logger.error(error_msg)
+            if started:
+                self._record_failure(op_id, "deposit", miner_hotkey, e)
+            if miner_hotkey is not None and not isinstance(e, CollateralBusyError):
+                try:
+                    self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+                except Exception as refresh_error:
+                    logger.error(f"Failed to refresh account size for {miner_hotkey} after deposit failure: {refresh_error}")
             return {
                 "successfully_processed": False,
                 "error_message": error_msg
             }
+
+        # The deposit is on chain from here on: nothing below may turn it into a reported failure, or the
+        # miner retries a deposit that already landed.
+        deposited_theta = self.to_theta(deposited_balance.rao)
+        self._journal(op_id, "deposit", "succeeded", miner_hotkey, amount_theta=deposited_theta)
+        logger.info(f"Deposit successful: {deposited_theta} Theta deposited to miner: {miner_hotkey}")
+        self._after_collateral_change(miner_hotkey, deposited_theta, "deposit")
+        return {
+            "successfully_processed": True,
+            "error_message": ""
+        }
+
+    @staticmethod
+    def _extrinsic_hash(extrinsic) -> Optional[str]:
+        try:
+            return "0x" + extrinsic.extrinsic_hash.hex()
+        except Exception:
+            return None
+
+    def _after_collateral_change(self, hotkey: str, theta_delta: float, operation: str) -> None:
+        """Bring the validator's own records in line with a collateral change that is already on chain. A failure
+        here is logged and left to the next refresh; it never changes the outcome reported for the transaction."""
+        try:
+            if not self._set_miner_account_size(hotkey, TimeUtil.now_in_millis()):
+                logger.error(f"{operation} for {hotkey} is on chain but its account size was not refreshed; "
+                             f"refresh it with the account size refresh endpoint")
+        except Exception as e:
+            logger.error(f"{operation} for {hotkey} is on chain but refreshing its account size failed: {e}")
+        try:
+            self._entity_collateral_client.offset_collateral_cache(hotkey, theta_delta)
+        except Exception as e:
+            logger.error(f"{operation} for {hotkey} is on chain but the entity collateral cache was not updated "
+                         f"(it corrects itself on its next refresh): {e}")
 
     def force_deposit(self, amount: float, miner_hotkey: str):
         """
@@ -535,23 +691,31 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             amount (float): Amount in theta tokens
             miner_hotkey (str): Miner's SS58 hotkey address
         """
+        op_id = self._new_op_id()
+        started = False
         try:
-            logger.info(f"Processing force deposit to {miner_hotkey} for {amount} Theta")
-            owner_address = ValiUtils.get_secret("collateral_owner_address")
-            owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
-            try:
-                self.collateral_manager.force_deposit(
-                    address=miner_hotkey,
-                    amount=int(amount * 10 ** 9),  # convert theta to rao_theta
-                    owner_address=owner_address,
-                    owner_private_key=owner_private_key
-                )
-            finally:
-                del owner_address
-                del owner_private_key
+            logger.info(f"Processing force deposit to {miner_hotkey} for {amount} Theta (op {op_id})")
+            with self._chain_write("force_deposit", miner_hotkey):
+                self._journal(op_id, "force_deposit", "started", miner_hotkey, amount_theta=amount)
+                started = True
+                owner_address = ValiUtils.get_secret("collateral_owner_address")
+                owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
+                try:
+                    self.collateral_manager.force_deposit(
+                        address=miner_hotkey,
+                        amount=int(amount * 10 ** 9),  # convert theta to rao_theta
+                        owner_address=owner_address,
+                        owner_private_key=owner_private_key
+                    )
+                finally:
+                    del owner_address
+                    del owner_private_key
+            self._journal(op_id, "force_deposit", "succeeded", miner_hotkey, amount_theta=amount)
             logger.info(f"Force deposit successful: {amount} Theta deposited for {miner_hotkey}")
         except Exception as e:
             logger.error(f"Force deposit execution failed: {str(e)}")
+            if started:
+                self._record_failure(op_id, "force_deposit", miner_hotkey, e)
             raise
 
     def refresh_miner_account_size(self, hotkey: str) -> bool:
@@ -928,7 +1092,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             self.force_deposit(slashed_amount, miner_hotkey)
             logger.info(f"Rolled back {slashed_amount} Theta slash for {miner_hotkey} after a failure: {failure}")
         except Exception as rollback_error:
-            logger.error(
+            self._alert(
                 f"CRITICAL: failed to roll back {slashed_amount} Theta slash for {miner_hotkey} after a failure "
                 f"({failure}); manual reinstatement required: {rollback_error}")
 
@@ -1002,21 +1166,29 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         returned_theta = 0.0
         if withdrawal_amount > 0:
+            op_id = self._new_op_id()
+            started = False
             owner_address = ValiUtils.get_secret("collateral_owner_address")
             owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
             vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
             try:
-                withdrawn_balance = self.collateral_manager.withdraw(
-                    amount=int(withdrawal_amount * 10 ** 9),  # convert theta to rao_theta
-                    source_coldkey=miner_coldkey,
-                    source_hotkey=miner_hotkey,
-                    vault_stake=self.wallet.hotkey.ss58_address,
-                    vault_wallet=self.wallet,
-                    owner_address=owner_address,
-                    owner_private_key=owner_private_key,
-                    wallet_password=vault_password
-                )
+                with self._chain_write("withdraw", miner_hotkey):
+                    self._journal(op_id, "withdraw", "started", miner_hotkey, amount_theta=withdrawal_amount,
+                                  coldkey=miner_coldkey, slashed_theta=slashed_amount if slashed else 0.0)
+                    started = True
+                    withdrawn_balance = self.collateral_manager.withdraw(
+                        amount=int(withdrawal_amount * 10 ** 9),  # convert theta to rao_theta
+                        source_coldkey=miner_coldkey,
+                        source_hotkey=miner_hotkey,
+                        vault_stake=self.wallet.hotkey.ss58_address,
+                        vault_wallet=self.wallet,
+                        owner_address=owner_address,
+                        owner_private_key=owner_private_key,
+                        wallet_password=vault_password
+                    )
             except Exception as withdraw_error:
+                if started:
+                    self._record_failure(op_id, "withdraw", miner_hotkey, withdraw_error)
                 # A closed account keeps its slash: what is left stays withdrawable as a closed account
                 if slashed:
                     self._roll_back_slash(slashed_amount, miner_hotkey, withdraw_error)
@@ -1026,6 +1198,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 del owner_private_key
                 del vault_password
             returned_theta = self.to_theta(withdrawn_balance.rao)
+            self._journal(op_id, "withdraw", "succeeded", miner_hotkey, amount_theta=returned_theta)
         if query_result.get("owed_slash") and slashed:
             try:
                 if not self._elimination_client.set_collateral_slashed(miner_hotkey, True):
@@ -1034,8 +1207,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 logger.error(f"The slash owed by {miner_hotkey} was taken but its elimination row could not be updated: {e}")
         msg = f"Withdrawal successful: {returned_theta} Theta withdrawn for {miner_hotkey}, returned to {miner_coldkey}"
         logger.info(msg)
-        self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
-        self._entity_collateral_client.offset_collateral_cache(miner_hotkey, -returned_theta)
+        # The withdrawal is on chain: a failure in the validator's own records must not report it as failed
+        self._after_collateral_change(miner_hotkey, -returned_theta, "withdrawal")
         return {
             "successfully_processed": True,
             "error_message": "",
@@ -1093,52 +1266,68 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return True
 
         # Call collateral SDK slash method
-        logger.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
+        op_id = self._new_op_id()
+        logger.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey} (op {op_id})")
         slash_amount_rao = int(slash_amount * 10 ** 9)
         owner_address = ValiUtils.get_secret("collateral_owner_address")
         owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
         vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
         try:
-            try:
-                self.collateral_manager.slash(
-                    address=miner_hotkey,
-                    amount=slash_amount_rao,
-                    owner_address=owner_address,
-                    owner_private_key=owner_private_key,
-                )
-            except Exception as e:
-                # The SDK raises when it cannot confirm the receipt, which includes a transaction
-                # that was broadcast and is mined later (e.g. a 429 while polling). Returning False
-                # then makes process_pending_slashes revert its marks and slash the same amount again
-                # on its next cycle. Only report failure once the balance shows the slash did not land.
-                if not self._slash_landed(miner_hotkey, current_balance_theta, slash_amount):
-                    logger.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
-                    return False
-                logger.warning(
-                    f"Slash call for {miner_hotkey} raised ({e}) but the collateral balance shows the "
-                    f"{slash_amount} Theta slash executed; treating it as successful so it is not charged again"
-                )
+            # The lock is held through the confirmation and the burn: a slash whose receipt is still
+            # unknown must not share its nonce window with the next owner transaction.
+            with self._chain_write("slash", miner_hotkey):
+                self._journal(op_id, "slash", "started", miner_hotkey, amount_theta=slash_amount)
+                try:
+                    self.collateral_manager.slash(
+                        address=miner_hotkey,
+                        amount=slash_amount_rao,
+                        owner_address=owner_address,
+                        owner_private_key=owner_private_key,
+                    )
+                except Exception as e:
+                    # The SDK raises when it cannot confirm the receipt, which includes a transaction
+                    # that was broadcast and is mined later (e.g. a 429 while polling). Returning False
+                    # then makes process_pending_slashes revert its marks and slash the same amount again
+                    # on its next cycle. Only report failure once the balance shows the slash did not land.
+                    if not self._slash_landed(miner_hotkey, current_balance_theta, slash_amount):
+                        logger.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
+                        self._record_failure(op_id, "slash", miner_hotkey, e)
+                        return False
+                    logger.warning(
+                        f"Slash call for {miner_hotkey} raised ({e}) but the collateral balance shows the "
+                        f"{slash_amount} Theta slash executed; treating it as successful so it is not charged again"
+                    )
 
-            logger.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
+                self._journal(op_id, "slash", "succeeded", miner_hotkey, amount_theta=slash_amount)
+                logger.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
 
-            # Only burn a portion of the slash; the remainder stays in the vault stake
-            burn_amount = slash_amount * ValiConfig.SLASH_BURN_PROPORTION
-            burn_amount_rao = int(slash_amount_rao * ValiConfig.SLASH_BURN_PROPORTION)
-            try:
-                self.collateral_manager.burn(
-                    amount=burn_amount_rao,
-                    vault_stake=self.wallet.hotkey.ss58_address,
-                    vault_wallet=self.wallet,
-                    wallet_password=vault_password,
-                )
-                logger.info(f"Successfully burned {burn_amount} of {slash_amount} slashed Theta for {miner_hotkey}")
-            except Exception as e:
-                logger.error(
-                    f"Slash succeeded but burn failed for {miner_hotkey} - "
-                    f"{burn_amount} Theta to burn remains in slashedCollateral pool: {e}"
-                )
+                # Only burn a portion of the slash; the remainder stays in the vault stake
+                burn_amount = slash_amount * ValiConfig.SLASH_BURN_PROPORTION
+                burn_amount_rao = int(slash_amount_rao * ValiConfig.SLASH_BURN_PROPORTION)
+                burn_op_id = self._new_op_id()
+                try:
+                    self._journal(burn_op_id, "burn", "started", miner_hotkey, amount_theta=burn_amount,
+                                  slash_op=op_id)
+                    self.collateral_manager.burn(
+                        amount=burn_amount_rao,
+                        vault_stake=self.wallet.hotkey.ss58_address,
+                        vault_wallet=self.wallet,
+                        wallet_password=vault_password,
+                    )
+                    self._journal(burn_op_id, "burn", "succeeded", miner_hotkey, amount_theta=burn_amount)
+                    logger.info(f"Successfully burned {burn_amount} of {slash_amount} slashed Theta for {miner_hotkey}")
+                except Exception as e:
+                    self._record_failure(burn_op_id, "burn", miner_hotkey, e)
+                    logger.error(
+                        f"Slash succeeded but burn failed for {miner_hotkey} - "
+                        f"{burn_amount} Theta to burn remains in slashedCollateral pool: {e}"
+                    )
 
             return True
+        except CollateralBusyError as e:
+            # Nothing was sent; the caller's next cycle slashes again
+            logger.error(f"Slash of {slash_amount} Theta from {miner_hotkey} not attempted: {e}")
+            return False
         finally:
             del owner_address
             del owner_private_key
@@ -1182,17 +1371,20 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         for attempt in range(max_retries):
             try:
                 rao_balance = self.collateral_manager.balance_of(miner_address)
+                ValidatorContractManager._last_chain_success_ms = TimeUtil.now_in_millis()
                 return self.to_theta(rao_balance)
             except Exception as e:
-                # Check if this is a rate limiting error (429)
-                if "429" in str(e) and attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s
-                    logger.warning(
-                        f"Rate limited getting balance for {miner_address}, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(wait_time)
-                else:
+                # A 429, a timeout or a dropped connection all pass; only a bad address cannot. Callers
+                # read None as "no balance to act on" (a refused withdrawal, a skipped slash), so one
+                # failed read must not be the answer. Unit tests have no chain to retry against.
+                if type(e) is ValueError or self.running_unit_tests or attempt >= max_retries - 1:
                     logger.error(f"Failed to get collateral balance for {miner_address}: {e}")
                     return None
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                logger.warning(
+                    f"Could not read balance for {miner_address} ({e}), retrying in {wait_time}s... "
+                    f"(attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
         return None
 
     def get_total_collateral(self) -> int:
@@ -1358,9 +1550,24 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return False
 
     def _query_owner_on_chain(self, hotkey_ss58: str):
-        """Blocking chain query; runs on the bounded ownership executor."""
-        subtensor_api = self.collateral_manager.subtensor_api
-        return subtensor_api.queries.query_subtensor("Owner", [hotkey_ss58])
+        """Blocking chain query; runs on the bounded ownership executor, on a connection of its own.
+        The SDK's websocket belongs to the signing lock: a query sharing it from this thread could
+        read a collateral transaction's reply, and one abandoned at its timeout would leave the
+        socket mid-request for the next deposit."""
+        subtensor_api = self._open_ownership_subtensor()
+        try:
+            return subtensor_api.queries.query_subtensor("Owner", [hotkey_ss58])
+        finally:
+            try:
+                subtensor_api.close()
+            except Exception:
+                pass
+
+    def _open_ownership_subtensor(self):
+        from bittensor.extras.subtensor_api import SubtensorApi
+        endpoint = (getattr(self.collateral_manager, "subtensor_endpoint", None)
+                    or self._collateral_network.subtensor_network)
+        return SubtensorApi(network=endpoint)
 
     def shutdown_ownership_executor(self):
         """Release the bounded ownership executor (operator/teardown hook).

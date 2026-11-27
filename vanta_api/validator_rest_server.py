@@ -1354,7 +1354,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Process the withdrawal using verified data
             result = self.contract_manager.process_withdrawal_request(
-                amount=data['amount'],
+                amount=amount,
                 miner_coldkey=data['miner_coldkey'],
                 miner_hotkey=data['miner_hotkey'],
                 close_account=close_account,

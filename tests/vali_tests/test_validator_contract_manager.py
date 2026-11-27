@@ -364,7 +364,10 @@ class TestBoundedOwnershipQuery(TestBase):
         m._metagraph_client = MagicMock()
         m._metagraph_client.get_neurons.return_value = []  # force the chain fallback
         m.collateral_manager = MagicMock()
-        m.collateral_manager.subtensor_api.queries.query_subtensor.side_effect = query_side_effect
+        # The ownership lookup opens a connection of its own (never the SDK's signing websocket)
+        m._ownership_api = MagicMock()
+        m._open_ownership_subtensor = lambda: m._ownership_api
+        m._ownership_api.queries.query_subtensor.side_effect = query_side_effect
         return m
 
     def test_hung_chain_query_returns_false_within_timeout(self):
@@ -385,18 +388,18 @@ class TestBoundedOwnershipQuery(TestBase):
     def test_failure_cooldown_short_circuits_chain(self):
         m = self._make_manager(RuntimeError("chain down"))
         self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
-        calls_after_first = m.collateral_manager.subtensor_api.queries.query_subtensor.call_count
+        calls_after_first = m._ownership_api.queries.query_subtensor.call_count
         # Within the cooldown the chain must NOT be queried again.
         self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
         self.assertEqual(
-            m.collateral_manager.subtensor_api.queries.query_subtensor.call_count,
+            m._ownership_api.queries.query_subtensor.call_count,
             calls_after_first,
         )
         # Once the cooldown lapses the query is attempted again.
         m.OWNERSHIP_FAILURE_COOLDOWN_S = 0.0
         self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
         self.assertGreater(
-            m.collateral_manager.subtensor_api.queries.query_subtensor.call_count,
+            m._ownership_api.queries.query_subtensor.call_count,
             calls_after_first,
         )
 
@@ -407,9 +410,9 @@ class TestBoundedOwnershipQuery(TestBase):
         self.assertEqual(m._coldkey_hotkey_cache[("5Owner", "5HK")], True)
         self.assertNotIn(("5Owner", "5HK"), m._ownership_failure_ts)
         # Cached: no further chain calls.
-        calls = m.collateral_manager.subtensor_api.queries.query_subtensor.call_count
+        calls = m._ownership_api.queries.query_subtensor.call_count
         self.assertTrue(m.verify_coldkey_owns_hotkey("5Owner", "5HK"))
-        self.assertEqual(m.collateral_manager.subtensor_api.queries.query_subtensor.call_count, calls)
+        self.assertEqual(m._ownership_api.queries.query_subtensor.call_count, calls)
 
     def test_owner_query_passes_hotkey_as_params(self):
         # Same signature as bittensor's query_subtensor(name, params=None, block=None).
@@ -761,3 +764,239 @@ class TestCollateralNodeProblem(TestBase):
         # 5 blocks behind: fine to stay on (20), not yet to return to (2)
         self.assertIsNone(self._probe(self._node(), max_lag_blocks=20))
         self.assertIn("stale", self._probe(self._node(), max_lag_blocks=2))
+
+
+class TestCollateralTransactionSafety(TestBase):
+    """Collateral transactions share one pair of signing keys and one chain connection, so they run one
+    at a time; each is journaled so a restart cannot lose track of one; and a transaction that is on
+    chain is reported as a success whatever happens to the validator's own records afterwards."""
+
+    HOTKEY = "5HK"
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(self._reset_write_state)
+        self._reset_write_state()
+
+    @staticmethod
+    def _reset_write_state():
+        from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+        ValidatorContractManager._chain_write_active = None
+
+    def _make_manager(self, balance_theta=500.0):
+        import os
+        from unittest.mock import MagicMock
+        from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+
+        m = object.__new__(ValidatorContractManager)
+        m.is_mothership = True
+        m.is_testnet = False
+        m.running_unit_tests = True
+        m.wallet = MagicMock()
+        m.collateral_manager = MagicMock()
+        m._collateral_network = MagicMock()
+        m._slack_notifier = MagicMock()
+        m._entity_collateral_client = MagicMock()
+        m._set_miner_account_size = MagicMock(return_value=True)
+        m.get_miner_collateral_balance = MagicMock(return_value=balance_theta)
+        m._journal_path = os.path.join(self._tmp.name, "collateral_operations.jsonl")
+        return m
+
+    def _journal_events(self, m):
+        import json
+        import os
+        if not os.path.exists(m._journal_path):
+            return []
+        with open(m._journal_path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f]
+
+    def _stub_deposit(self, m, deposited_rao=5 * 10 ** 9):
+        from unittest.mock import MagicMock
+        extrinsic = MagicMock()
+        extrinsic.value = {"address": "5COLD", "call": {"call_args": [
+            {"name": "hotkey", "value": self.HOTKEY}, {"name": "alpha_amount", "value": deposited_rao}]}}
+        extrinsic.extrinsic_hash = b"\x01\x02"
+        m.collateral_manager.decode_extrinsic.return_value = extrinsic
+        m.collateral_manager.deposit.return_value = MagicMock(rao=deposited_rao)
+
+    def test_transactions_never_overlap(self):
+        """A slash, a force deposit and a second slash from three threads reach the SDK one at a time."""
+        import threading
+        from unittest.mock import patch
+
+        m = self._make_manager()
+        in_flight, peak, guard = [0], [0], threading.Lock()
+
+        def sdk_call(*args, **kwargs):
+            with guard:
+                in_flight[0] += 1
+                peak[0] = max(peak[0], in_flight[0])
+            time.sleep(0.05)
+            with guard:
+                in_flight[0] -= 1
+
+        m.collateral_manager.slash.side_effect = sdk_call
+        m.collateral_manager.burn.side_effect = sdk_call
+        m.collateral_manager.force_deposit.side_effect = sdk_call
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            threads = [threading.Thread(target=m.slash_miner_collateral, args=(self.HOTKEY, 10.0)),
+                       threading.Thread(target=m.force_deposit, args=(5.0, self.HOTKEY)),
+                       threading.Thread(target=m.slash_miner_collateral, args=("5OTHER", 10.0))]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+        self.assertEqual(m.collateral_manager.slash.call_count, 2)
+        self.assertEqual(m.collateral_manager.force_deposit.call_count, 1)
+        self.assertEqual(peak[0], 1)
+
+    def test_busy_signer_fails_before_anything_is_sent(self):
+        """When the transaction ahead does not finish in time, the next one gives up having sent nothing."""
+        import threading
+        from unittest.mock import patch
+        from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+
+        m = self._make_manager()
+        m.CHAIN_WRITE_LOCK_TIMEOUT_S = 0.05
+        holding, release = threading.Event(), threading.Event()
+
+        def hold():
+            with m._chain_write("withdraw", "5BUSY"):
+                holding.set()
+                release.wait(timeout=10)
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        try:
+            self.assertTrue(holding.wait(timeout=5))
+            with patch.object(ValiUtils, "get_secret", return_value="secret"):
+                self.assertFalse(m.slash_miner_collateral(self.HOTKEY, 10.0))
+                self._stub_deposit(m)
+                result = m.process_deposit_request("00")
+            self.assertFalse(result["successfully_processed"])
+            self.assertIn("still in progress", result["error_message"])
+        finally:
+            release.set()
+            holder.join(timeout=5)
+        m.collateral_manager.slash.assert_not_called()
+        m.collateral_manager.deposit.assert_not_called()
+        self.assertEqual(self._journal_events(m), [])
+        self.assertIsNone(ValidatorContractManager._chain_write_active)
+
+    def test_deposit_on_chain_is_a_success_when_bookkeeping_fails(self):
+        """The account size refresh and the entity cache run after the deposit landed: their failure is logged,
+        not handed to the miner as a failed deposit to retry."""
+        from unittest.mock import patch
+
+        m = self._make_manager()
+        self._stub_deposit(m)
+        m._set_miner_account_size.side_effect = RuntimeError("MinerAccountServer timed out")
+        m._entity_collateral_client.offset_collateral_cache.side_effect = RuntimeError("EntityCollateralServer down")
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            result = m.process_deposit_request("00")
+        self.assertTrue(result["successfully_processed"], result)
+        events = self._journal_events(m)
+        self.assertEqual([e["event"] for e in events], ["started", "succeeded"])
+        self.assertEqual(events[0]["hotkey"], self.HOTKEY)
+        self.assertEqual(events[0]["extrinsic_hash"], "0x0102")
+
+    def test_failed_deposit_is_journaled_and_reported(self):
+        from unittest.mock import patch
+
+        m = self._make_manager()
+        self._stub_deposit(m)
+        m.collateral_manager.deposit.side_effect = RuntimeError("Failed to deposit into the EVM contract")
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            result = m.process_deposit_request("00")
+        self.assertFalse(result["successfully_processed"])
+        self.assertEqual([e["event"] for e in self._journal_events(m)], ["started", "failed"])
+        m._slack_notifier.send_message.assert_not_called()
+
+    def test_critical_error_alerts_an_operator(self):
+        """A CriticalError means the SDK could neither finish nor revert: funds may be in limbo."""
+        from unittest.mock import patch
+        from collateral_sdk.errors import CriticalError
+
+        m = self._make_manager()
+        self._stub_deposit(m)
+        m.collateral_manager.deposit.side_effect = CriticalError("Failed to revert the stake transfer")
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            result = m.process_deposit_request("00")
+        self.assertFalse(result["successfully_processed"])
+        self.assertEqual([e["event"] for e in self._journal_events(m)], ["started", "critical"])
+        m._slack_notifier.send_message.assert_called_once()
+        self.assertIn("manual reconciliation", m._slack_notifier.send_message.call_args.args[0])
+
+    def test_transaction_cut_short_by_a_restart_is_reported_once(self):
+        m = self._make_manager()
+        m._journal("op-done", "deposit", "started", self.HOTKEY, amount_theta=5.0)
+        m._journal("op-done", "deposit", "succeeded", self.HOTKEY, amount_theta=5.0)
+        m._journal("op-cut", "withdraw", "started", "5CUT", amount_theta=7.0, coldkey="5COLD")
+
+        self.assertEqual([r["op_id"] for r in m._unfinished_operations()], ["op-cut"])
+        m._report_unfinished_operations()
+        m._slack_notifier.send_message.assert_called_once()
+        message = m._slack_notifier.send_message.call_args.args[0]
+        self.assertIn("5CUT", message)
+        self.assertIn("op-cut", message)
+        self.assertNotIn("op-done", message)
+
+        # The next startup has nothing left to report
+        m._report_unfinished_operations()
+        m._slack_notifier.send_message.assert_called_once()
+
+    def test_no_journal_in_unit_test_mode_without_a_path(self):
+        m = self._make_manager()
+        m._journal_path = None
+        m._journal("op", "deposit", "started", self.HOTKEY)
+        self.assertEqual(m._unfinished_operations(), [])
+
+    def test_balance_read_retries_any_transient_error(self):
+        """A timeout or dropped connection is retried like a 429; a bad address is not."""
+        from unittest.mock import patch
+        from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+
+        m = self._make_manager()
+        del m.get_miner_collateral_balance  # use the real method
+        m.running_unit_tests = False
+        m.collateral_manager.balance_of.side_effect = [ConnectionError("connection reset"),
+                                                       TimeoutError("read timed out"), 5 * 10 ** 9]
+        with patch("vali_objects.contract.validator_contract_manager.time.sleep") as sleep:
+            self.assertEqual(ValidatorContractManager.get_miner_collateral_balance(m, self.HOTKEY), 5.0)
+        self.assertEqual(sleep.call_count, 2)
+
+        m.collateral_manager.balance_of.reset_mock()
+        m.collateral_manager.balance_of.side_effect = ValueError("Invalid SS58 address: nope")
+        with patch("vali_objects.contract.validator_contract_manager.time.sleep") as sleep:
+            self.assertIsNone(ValidatorContractManager.get_miner_collateral_balance(m, "nope"))
+        self.assertEqual(m.collateral_manager.balance_of.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_health_check_reports_a_stuck_transaction(self):
+        from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+
+        m = self._make_manager()
+        self.assertEqual(m.health_check()["status"], "ok")
+        self.assertIsNone(m.health_check()["chain_write_in_flight"])
+
+        ValidatorContractManager._chain_write_active = {
+            "operation": "deposit", "hotkey": self.HOTKEY, "alerted": False,
+            "started_s": time.time() - m.CHAIN_WRITE_STUCK_S - 5}
+        health = m.health_check()
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["chain_write_in_flight"], "deposit")
+        self.assertEqual(health["chain_write_hotkey"], self.HOTKEY)
+
+    def test_ownership_query_uses_its_own_connection(self):
+        """The ownership lookup never touches the SDK's websocket, which belongs to the signing lock."""
+        from unittest.mock import MagicMock
+
+        m = self._make_manager()
+        api = MagicMock()
+        api.queries.query_subtensor.return_value = "5COLD"
+        m._open_ownership_subtensor = MagicMock(return_value=api)
+        self.assertEqual(m._query_owner_on_chain(self.HOTKEY), "5COLD")
+        api.close.assert_called_once()
+        m.collateral_manager.subtensor_api.queries.query_subtensor.assert_not_called()
