@@ -48,6 +48,11 @@ class OrderExecution:
 
 class MarketOrderManager():
 
+    # The most position uuids a FLAT_ALL may name without their position being open and still have
+    # looked up (_pairs_of_closed_named_positions). Each one is an RPC to the position server, and
+    # how many a request names is its sender's choice; an account holds far fewer positions.
+    MAX_CLOSED_POSITION_LOOKUPS = 100
+
     def __init__(self, serve:bool, running_unit_tests=False, connection_mode=RPCConnectionMode.RPC):
         self.serve = serve
         self.running_unit_tests = running_unit_tests
@@ -369,33 +374,49 @@ class MarketOrderManager():
 
         return order, binding_cap
 
-    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
+    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False,
+                        now_ms: int | None = None) -> list[str]:
+        """Close every open position of the hotkey (close_all) or the ones named in position_uuids.
+
+        Returns the trade_pair_ids whose bracket orders the caller should cancel, as plain strings
+        so the list crosses RPC as it is: the pair of each position this call closed and, for a
+        request that names position uuids, the pair of each named position that was already closed
+        and whose pair has no open position (_pairs_of_closed_named_positions; this is how a resent
+        FLAT_ALL cancels the brackets its first attempt left behind). A position whose close raised,
+        or that was no longer open when its turn came, is left out, and so is every pair with an
+        open position: a pair listed by mistake would lose the stop loss of a position that is
+        still open.
+
+        A resent close_all names no position, so it reports only what it closes itself; brackets a
+        first attempt left behind stay with the limit order daemon.
+        """
         logger.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")
 
-        open_positions = self._position_client.get_positions_for_hotkeys([hotkey], only_open_positions=True).get(hotkey)
-
-        if not open_positions:
-            logger.warning(f"No open positions found for miner [{hotkey}]")
-            return
+        open_positions = self._position_client.get_positions_for_hotkeys([hotkey], only_open_positions=True).get(hotkey) or []
+        named_uuids = [] if close_all else [u for u in dict.fromkeys(position_uuids or []) if u]
 
         if close_all:
             positions_to_close = open_positions
         else:
-            target_uuids = set(position_uuids or [])
+            target_uuids = set(named_uuids)
             positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
-            if not positions_to_close:
-                logger.info(f"No matching positions found for UUIDs {position_uuids} for miner [{hotkey}]")
-                return
+
+        if not open_positions:
+            logger.warning(f"No open positions found for miner [{hotkey}]")
+        elif not positions_to_close:
+            logger.info(f"No matching positions found for UUIDs {position_uuids} for miner [{hotkey}]")
 
         total_positions = len(positions_to_close)
-        cnt_closed = 0
+        closed_trade_pair_ids: list[str] = []
 
-        logger.info(f"Found {total_positions} positions to close for miner [{hotkey}]")
+        if positions_to_close:
+            logger.info(f"Found {total_positions} positions to close for miner [{hotkey}]")
 
         for i, position in enumerate(positions_to_close):
             position_close_uuid = f"{position.position_uuid}-flat-all"
+            trade_pair_id = position.trade_pair.trade_pair_id
             try:
-                self.execute_order(
+                result = self.execute_order(
                     hotkey=hotkey,
                     order_uuid=position_close_uuid,
                     trade_pair=position.trade_pair,
@@ -405,19 +426,86 @@ class MarketOrderManager():
                     now_ms=now_ms,
                     enforce_cooldown=False,
                 )
-                cnt_closed += 1
+                # None: the position was already gone (a stop or another order closed it since the
+                # listing above), and its brackets belong to whatever closed it. Otherwise the
+                # returned position says whether the pair is flat now.
+                _, closed_position = result if result is not None else (None, None)
+                if closed_position is None or not closed_position.is_closed_position:
+                    logger.warning(
+                        f"[FLAT_ALL] Position {i+1}/{total_positions} [{trade_pair_id}] for miner [{hotkey}] "
+                        f"was not closed by this request"
+                    )
+                elif trade_pair_id not in closed_trade_pair_ids:
+                    closed_trade_pair_ids.append(trade_pair_id)
 
             except Exception as e:
                 logger.error(
                     f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
-                    f"[{position.trade_pair.trade_pair_id}] for miner [{hotkey}]: {str(e)}"
+                    f"[{trade_pair_id}] for miner [{hotkey}]: {str(e)}"
                 )
                 continue
 
-        logger.info(
-            f"[FLAT_ALL] Completed for miner [{hotkey}]: "
-            f"{cnt_closed}/{total_positions} positions closed"
-        )
+        if positions_to_close:
+            logger.info(
+                f"[FLAT_ALL] Completed for miner [{hotkey}]: "
+                f"{len(closed_trade_pair_ids)}/{total_positions} positions closed"
+            )
+
+        # Last, so that the pairs are checked for an open position as late as possible
+        for trade_pair_id in self._pairs_of_closed_named_positions(hotkey, named_uuids, open_positions):
+            if trade_pair_id not in closed_trade_pair_ids:
+                closed_trade_pair_ids.append(trade_pair_id)
+        return closed_trade_pair_ids
+
+    def _pairs_of_closed_named_positions(self, hotkey: str, named_uuids: list[str], open_positions: list[Position]) -> list[str]:
+        """
+        The trade pairs of the positions a FLAT_ALL named by uuid that are already closed, where
+        the pair has no open position. open_positions is the listing the request started from.
+
+        This is what a resent FLAT_ALL finds when its first attempt closed the positions and never
+        got to cancel their bracket orders (the caller timed out or died in between): nothing is
+        open under those uuids, so without this the resend would report nothing and the brackets
+        would rest until the limit order daemon reaches them, which can be long (closed market, no
+        recent price) and is where a new position on the pair can inherit them.
+
+        A pair is left out when it had an open position at the listing or has one now: its brackets
+        belong to that position, whatever was closed on the pair before. A uuid is looked up in the
+        hotkey's own positions only, so one that belongs to another hotkey, or to none, counts for
+        nothing. Best effort: a failed lookup ends it, the closes above stand.
+        """
+        open_uuids = {p.position_uuid for p in open_positions}
+        open_trade_pair_ids = {p.trade_pair.trade_pair_id for p in open_positions}
+        not_open_uuids = [u for u in named_uuids if u not in open_uuids]
+        if len(not_open_uuids) > self.MAX_CLOSED_POSITION_LOOKUPS:
+            logger.warning(
+                f"[FLAT_ALL] miner [{hotkey}] named {len(not_open_uuids)} positions that are not open; "
+                f"looking up the first {self.MAX_CLOSED_POSITION_LOOKUPS} only"
+            )
+            not_open_uuids = not_open_uuids[:self.MAX_CLOSED_POSITION_LOOKUPS]
+
+        trade_pair_ids: list[str] = []
+        try:
+            for position_uuid in not_open_uuids:
+                # Indexed on the position server: hotkey -> position_uuid -> Position
+                position = self._position_client.get_position(hotkey, position_uuid)
+                if position is None or not position.is_closed_position:
+                    continue
+                trade_pair_id = position.trade_pair.trade_pair_id
+                if trade_pair_id in open_trade_pair_ids or trade_pair_id in trade_pair_ids:
+                    continue
+                # The listing is as old as the closes above took; ask again (indexed as well)
+                if self._position_client.get_open_position_for_trade_pair(hotkey, trade_pair_id) is not None:
+                    continue
+                trade_pair_ids.append(trade_pair_id)
+        except Exception as e:
+            logger.error(f"[FLAT_ALL] Lookup of already closed positions failed for miner [{hotkey}]: {e}")
+
+        if trade_pair_ids:
+            logger.info(
+                f"[FLAT_ALL] miner [{hotkey}] named positions already closed on {trade_pair_ids}; "
+                f"reporting these pairs so that the bracket orders left on them are cancelled"
+            )
+        return trade_pair_ids
 
     @staticmethod
     def _is_effective_close(position: Position, order_type: OrderType, order_quantity: float, order_value: float) -> bool:

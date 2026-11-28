@@ -86,7 +86,8 @@ class MarketOrderServer(RPCServerBase):
             enforce_cooldown=enforce_cooldown,
         )
 
-    def close_positions_rpc(self, hotkey, position_uuids=None, close_all=False, now_ms=None):
+    def close_positions_rpc(self, hotkey, position_uuids=None, close_all=False, now_ms=None) -> list[str]:
+        """Returns the trade_pair_ids to cancel bracket orders on (see MarketOrderManager.close_positions)."""
         return self._manager.close_positions(
             hotkey=hotkey,
             position_uuids=position_uuids,

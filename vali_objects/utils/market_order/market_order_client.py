@@ -59,7 +59,17 @@ class MarketOrderClient(RPCClientBase):
             enforce_cooldown=enforce_cooldown,
         )
 
-    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
+    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False,
+                        now_ms: int | None = None) -> list[str]:
+        """
+        Close every open position of the hotkey (close_all) or the ones named in position_uuids.
+
+        Returns:
+            The trade_pair_ids whose bracket orders the caller should cancel: the pair of each
+            position this call closed and, when position_uuids are given, of each named position
+            that was already closed and whose pair has no open position (a resent request). A
+            position whose close failed, or any pair with an open position, is not listed.
+        """
         return self._server.close_positions_rpc(
             hotkey=hotkey,
             position_uuids=position_uuids,

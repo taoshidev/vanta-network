@@ -22,6 +22,7 @@ from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.limit_order.order_utils import OrderSize
 from entity_management.entity_utils import is_synthetic_hotkey
 from shared_objects.log import logger
+from shared_objects.rpc.rpc_client_base import RPCCallTimeoutError
 
 def _validate_required(value, field_type: type):
     if not value:
@@ -268,21 +269,68 @@ class OrderProcessor:
     ) -> OrderProcessingResult:
         close_all = bool(order_uuid and order_uuid.strip().upper() == "ALL")
         position_uuids = None if close_all else [u.strip() for u in order_uuid.split(',')] if order_uuid else []
-        self.market_order_client.close_positions(
+        closed_trade_pair_ids = self.market_order_client.close_positions(
             hotkey=hotkey,
             position_uuids=position_uuids,
             close_all=close_all,
             now_ms=now_ms,
         )
-        # Post-commit: positions are closed above; a failed bracket sweep must not turn the
-        # committed close into an "apply failed" resend (see process_market_order).
-        try:
-            self.process_limit_cancel(hotkey, None, "ALL", now_ms, ExecutionType.BRACKET)
-        except Exception as e:
-            logger.error(
-                f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL COMMITTED but post-commit bracket cancel failed: {e}"
-            )
+        self._cancel_brackets_of_closed_pairs(hotkey, closed_trade_pair_ids, now_ms)
         return OrderProcessingResult(execution_type=ExecutionType.FLAT_ALL, should_track_uuid=True)
+
+    def _cancel_brackets_of_closed_pairs(self, hotkey: str, closed_trade_pair_ids: list[str] | None, now_ms: int) -> None:
+        """
+        Cancel the bracket orders of the trade pairs close_positions reported for a FLAT_ALL (the
+        pairs it closed, see MarketOrderManager.close_positions), and of no other pair: the rule a
+        single FLAT follows for its own pair. A position this FLAT_ALL left open (not in the uuid
+        list, or its close failed) keeps its stop loss and take profit; closing nothing cancels
+        nothing.
+
+        Post-commit: the closes are durable, so nothing here may raise (see process_market_order).
+        Each pair is cancelled on its own, so one failure leaves the other pairs' cancels to run.
+        The exception is a call that times out: the limit order server is not answering, and every
+        further cancel would wait out the same timeout while this request holds its handler
+        thread, so the loop stops there.
+
+        A bracket this leaves on a closed pair is not gone for good, and not gone at once either.
+        The limit order daemon (LimitOrderManager.check_and_fill_limit_orders) cancels a bracket
+        whose pair has no open position, or whose open position was opened after the bracket was
+        placed, but only on a pass that evaluates the pair's brackets: not while the pair is
+        blocked, while its market is closed, during the equities pre-market and after-hours
+        sessions, or while no recent websocket price has arrived for it. Until such a pass the
+        bracket rests, and a position that opens on the pair dated at or before the bracket (a
+        limit order filled from an earlier quote) keeps it as its own. A FLAT_ALL resent with the
+        same position uuids cancels it, unless a position is open on the pair by then
+        (close_positions reports the pair of a named position that is already closed).
+        """
+        if not isinstance(closed_trade_pair_ids, (list, tuple)):
+            # Cancel nothing rather than guess which pairs closed
+            logger.warning(
+                f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL: close_positions returned "
+                f"{type(closed_trade_pair_ids).__name__}, not the list of closed trade pairs (a "
+                f"MarketOrderServer still on the previous code during a restart?). No bracket order "
+                f"is cancelled by this request; the limit order daemon cancels those of closed positions."
+            )
+            return
+        for i, trade_pair_id in enumerate(closed_trade_pair_ids):
+            try:
+                trade_pair = TradePair.from_trade_pair_id(trade_pair_id)
+                if trade_pair is None:
+                    # Never fall through: process_limit_cancel reads no trade pair as every trade pair
+                    raise ValueError("unknown trade pair")
+                self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
+            except RPCCallTimeoutError as e:
+                logger.error(
+                    f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL COMMITTED but post-commit bracket cancel "
+                    f"timed out for [{trade_pair_id}]: {e}. Not attempting the remaining pairs "
+                    f"{list(closed_trade_pair_ids[i + 1:])}; their brackets are left to the limit order daemon."
+                )
+                break
+            except Exception as e:
+                logger.error(
+                    f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL COMMITTED but post-commit bracket cancel "
+                    f"failed for [{trade_pair_id}]: {e}"
+                )
 
 
     def process_hyperliquid_order(

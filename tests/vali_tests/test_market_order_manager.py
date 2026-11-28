@@ -10,6 +10,8 @@ covers all of them: pure-logic unit tests for cooldown/effective-close,
 and ServerOrchestrator-backed integration tests for order execution and
 position closing.
 """
+from unittest.mock import patch
+
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
@@ -445,9 +447,13 @@ class TestMarketOrderManager(TestBase):
         ).get(self.DEFAULT_MINER_HOTKEY)
         self.assertEqual(len(open_positions_before), 3)
 
-        self.market_order_manager.close_positions(
+        closed = self.market_order_manager.close_positions(
             hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 10000
         )
+
+        # The closed pairs come back as plain trade_pair_id strings (they cross RPC)
+        self.assertEqual(sorted(closed), sorted(tp.trade_pair_id for tp in trade_pairs))
+        self.assertTrue(all(type(trade_pair_id) is str for trade_pair_id in closed))
 
         all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         self.assertEqual(len(all_positions), 3)
@@ -469,27 +475,235 @@ class TestMarketOrderManager(TestBase):
             trade_pair=TradePair.ETHUSDC, now_ms=now_ms + 1,
         )
 
-        self.market_order_manager.close_positions(
+        closed = self.market_order_manager.close_positions(
             hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[pos2.position_uuid], now_ms=now_ms + 10000
         )
 
+        self.assertEqual(closed, [TradePair.ETHUSDC.trade_pair_id])
         all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         by_uuid = {p.position_uuid: p for p in all_positions}
         self.assertFalse(by_uuid[pos1.position_uuid].is_closed_position)
         self.assertTrue(by_uuid[pos2.position_uuid].is_closed_position)
 
+    def open_btc_eth_sol(self, now_ms):
+        for i, trade_pair in enumerate((TradePair.BTCUSDC, TradePair.ETHUSDC, TradePair.SOLUSDC)):
+            self.execute(
+                self.DEFAULT_MINER_HOTKEY, f"position_{i}", OrderType.LONG, 1000.0 + i * 10, value=500.0,
+                trade_pair=trade_pair, now_ms=now_ms + i,
+            )
+
+    def open_trade_pair_ids(self):
+        positions = self.position_client.get_positions_for_hotkeys(
+            [self.DEFAULT_MINER_HOTKEY], only_open_positions=True
+        ).get(self.DEFAULT_MINER_HOTKEY) or []
+        return sorted(p.trade_pair.trade_pair_id for p in positions)
+
+    def test_close_positions_leaves_out_a_pair_whose_close_failed(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.open_btc_eth_sol(now_ms)
+        execute_order = self.market_order_manager.execute_order
+
+        def fail_eth(*args, **kwargs):
+            if kwargs["trade_pair"] == TradePair.ETHUSDC:
+                raise SignalException("Order Rejected: no live prices being found for ETHUSDC. Please try again.")
+            return execute_order(*args, **kwargs)
+
+        with patch.object(self.market_order_manager, "execute_order", side_effect=fail_eth):
+            closed = self.market_order_manager.close_positions(
+                hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 10000
+            )
+
+        # ETH is still open, so it must not be reported: the caller cancels brackets on what is listed
+        self.assertEqual(sorted(closed), [TradePair.BTCUSDC.trade_pair_id, TradePair.SOLUSDC.trade_pair_id])
+        self.assertEqual(self.open_trade_pair_ids(), [TradePair.ETHUSDC.trade_pair_id])
+
+    def test_close_positions_leaves_out_a_position_that_was_no_longer_open(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.open_btc_eth_sol(now_ms)
+        execute_order = self.market_order_manager.execute_order
+
+        def eth_already_closed(*args, **kwargs):
+            if kwargs["trade_pair"] == TradePair.ETHUSDC:
+                # Something else (a stop loss, another FLAT) closes ETH between the listing and its
+                # turn, so the FLAT finds no open position and returns None
+                execute_order(
+                    self.DEFAULT_MINER_HOTKEY, "eth_closed_elsewhere", TradePair.ETHUSDC, ExecutionType.MARKET,
+                    OrderType.FLAT, OrderSize(), now_ms=now_ms + 5000, enforce_cooldown=False,
+                )
+            return execute_order(*args, **kwargs)
+
+        with patch.object(self.market_order_manager, "execute_order", side_effect=eth_already_closed):
+            closed = self.market_order_manager.close_positions(
+                hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 10000
+            )
+
+        self.assertEqual(sorted(closed), [TradePair.BTCUSDC.trade_pair_id, TradePair.SOLUSDC.trade_pair_id])
+        self.assertEqual(self.open_trade_pair_ids(), [])
+
+    def test_close_positions_leaves_out_a_position_its_order_did_not_close(self):
+        now_ms = TimeUtil.now_in_millis()
+        _, position = self.execute(self.DEFAULT_MINER_HOTKEY, "order_1", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms)
+        # The position already holds an order under the uuid close_positions uses, so execute_order
+        # answers with that order as a replay and closes nothing. Not raising is not closing.
+        self.execute(
+            self.DEFAULT_MINER_HOTKEY, f"{position.position_uuid}-flat-all", OrderType.LONG, 1000.0, value=100.0,
+            now_ms=now_ms + 1,
+        )
+
+        closed = self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 10000
+        )
+
+        self.assertEqual(closed, [])
+        self.assertEqual(self.open_trade_pair_ids(), [self.DEFAULT_TRADE_PAIR.trade_pair_id])
+
+    # A FLAT_ALL resent with the same position uuids: its first attempt closed the positions, but the
+    # caller never got to cancel their bracket orders (it timed out or died in between)
+
+    def test_close_positions_reports_the_pair_of_a_named_position_already_closed(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.open_btc_eth_sol(now_ms)
+        by_pair = {p.trade_pair.trade_pair_id: p.position_uuid for p in self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)}
+        eth, sol = TradePair.ETHUSDC.trade_pair_id, TradePair.SOLUSDC.trade_pair_id
+        first = self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[by_pair[eth]], now_ms=now_ms + 10000
+        )
+        self.assertEqual(first, [eth])
+
+        # The resend names ETH again, and SOL, which is still open
+        resent = self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[by_pair[eth], by_pair[sol], by_pair[eth]], now_ms=now_ms + 11000
+        )
+
+        self.assertEqual(sorted(resent), [eth, sol])
+        self.assertEqual(self.open_trade_pair_ids(), [TradePair.BTCUSDC.trade_pair_id])
+        # With nothing left open under the named uuids, the pairs are reported all the same
+        again = self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[by_pair[sol], by_pair[eth]], now_ms=now_ms + 12000
+        )
+        self.assertEqual(again, [sol, eth])
+        self.assertEqual(self.open_trade_pair_ids(), [TradePair.BTCUSDC.trade_pair_id])
+
+    def test_close_positions_leaves_out_a_closed_named_position_whose_pair_was_reopened(self):
+        now_ms = TimeUtil.now_in_millis()
+        _, old = self.execute(self.DEFAULT_MINER_HOTKEY, "old_order", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms)
+        self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[old.position_uuid], now_ms=now_ms + 1000
+        )
+        _, new = self.execute(self.DEFAULT_MINER_HOTKEY, "new_order", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms + 2000)
+        self.assertNotEqual(new.position_uuid, old.position_uuid)
+
+        # The pair has an open position again: its brackets are that position's, so the pair is not
+        # reported, and the position named is the old one, so the new one is not closed either
+        resent = self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[old.position_uuid], now_ms=now_ms + 3000
+        )
+
+        self.assertEqual(resent, [])
+        open_position = self.position_client.get_open_position_for_trade_pair(
+            self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id
+        )
+        self.assertEqual(open_position.position_uuid, new.position_uuid)
+
+    def test_close_positions_leaves_out_a_pair_opened_since_the_listing(self):
+        now_ms = TimeUtil.now_in_millis()
+        _, old = self.execute(self.DEFAULT_MINER_HOTKEY, "old_order", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms)
+        self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[old.position_uuid], now_ms=now_ms + 1000
+        )
+        position_client = self.market_order_manager._position_client
+        get_position = position_client.get_position
+
+        def reopen_then_get(hotkey, position_uuid):
+            # The pair is opened again after the request listed the open positions (none) and
+            # before it looks the named position up
+            self.execute(self.DEFAULT_MINER_HOTKEY, "new_order", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms + 2000)
+            return get_position(hotkey, position_uuid)
+
+        with patch.object(position_client, "get_position", side_effect=reopen_then_get):
+            resent = self.market_order_manager.close_positions(
+                hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[old.position_uuid], now_ms=now_ms + 3000
+            )
+
+        self.assertEqual(resent, [])
+        self.assertEqual(self.open_trade_pair_ids(), [self.DEFAULT_TRADE_PAIR.trade_pair_id])
+
+    def test_close_positions_ignores_a_uuid_of_another_hotkey_or_of_no_position(self):
+        other_hotkey = "other_miner"
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, other_hotkey])
+        now_ms = TimeUtil.now_in_millis()
+        _, theirs = self.execute(other_hotkey, "their_order", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms)
+        self.market_order_manager.close_positions(hotkey=other_hotkey, position_uuids=[theirs.position_uuid], now_ms=now_ms + 1000)
+        named = [theirs.position_uuid, "not_a_real_uuid", ""]
+
+        closed = self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=named, now_ms=now_ms + 2000
+        )
+
+        self.assertEqual(closed, [])
+        # The same closed position counts for the hotkey it belongs to
+        self.assertEqual(
+            self.market_order_manager.close_positions(hotkey=other_hotkey, position_uuids=named, now_ms=now_ms + 2000),
+            [self.DEFAULT_TRADE_PAIR.trade_pair_id],
+        )
+
+    def test_close_positions_close_all_reports_nothing_once_everything_is_closed(self):
+        # A resent "ALL" names no position: what its first attempt closed is not reported again
+        now_ms = TimeUtil.now_in_millis()
+        self.open_btc_eth_sol(now_ms)
+        first = self.market_order_manager.close_positions(hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 10000)
+        self.assertEqual(len(first), 3)
+
+        resent = self.market_order_manager.close_positions(hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 11000)
+
+        self.assertEqual(resent, [])
+
+    def test_close_positions_looks_up_no_closed_position_when_every_named_one_is_open(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.open_btc_eth_sol(now_ms)
+        uuids = [p.position_uuid for p in self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)]
+        position_client = self.market_order_manager._position_client
+
+        with patch.object(position_client, "get_position", wraps=position_client.get_position) as get_position:
+            closed = self.market_order_manager.close_positions(
+                hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=uuids, now_ms=now_ms + 10000
+            )
+            self.assertEqual(len(closed), 3)
+            get_position.assert_not_called()
+            self.market_order_manager.close_positions(hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 11000)
+            get_position.assert_not_called()
+
+    def test_close_positions_caps_the_closed_position_lookups(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.open_btc_eth_sol(now_ms)
+        uuids = [p.position_uuid for p in self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)]
+        self.market_order_manager.close_positions(hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 10000)
+        position_client = self.market_order_manager._position_client
+
+        with patch.object(self.market_order_manager, "MAX_CLOSED_POSITION_LOOKUPS", 2), \
+                patch.object(position_client, "get_position", wraps=position_client.get_position) as get_position:
+            resent = self.market_order_manager.close_positions(
+                hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=["unknown_1"] + uuids, now_ms=now_ms + 11000
+            )
+
+        # Two lookups: the unknown uuid and the first closed position. The rest is left to the daemon
+        self.assertEqual(get_position.call_count, 2)
+        self.assertEqual(len(resent), 1)
+
     def test_close_positions_no_open_positions_is_noop(self):
         # Should not raise even though the miner has no positions at all.
-        self.market_order_manager.close_positions(hotkey="miner_with_no_positions", close_all=True)
+        closed = self.market_order_manager.close_positions(hotkey="miner_with_no_positions", close_all=True)
+        self.assertEqual(closed, [])
 
     def test_close_positions_no_matching_uuids_is_noop(self):
         now_ms = TimeUtil.now_in_millis()
         _, pos = self.execute(self.DEFAULT_MINER_HOTKEY, "order_1", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms)
 
-        self.market_order_manager.close_positions(
+        closed = self.market_order_manager.close_positions(
             hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=["not_a_real_uuid"], now_ms=now_ms + 10000
         )
 
+        self.assertEqual(closed, [])
         refreshed = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         self.assertFalse(next(p for p in refreshed if p.position_uuid == pos.position_uuid).is_closed_position)
 
