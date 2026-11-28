@@ -89,6 +89,10 @@ class MinerAccountServer(RPCServerBase):
         # Store is_mothership status (set by contract manager later)
         self._is_mothership = False
         self._first_snapshot_iteration = True
+        # Created on first use: the challenge period server may start after this one
+        self._connection_mode = connection_mode
+        self._running_unit_tests = running_unit_tests
+        self._challenge_period_client = None
 
         daemon_interval_s = 3600   # 1 hour
         hang_timeout_s = daemon_interval_s * 2  # 2 hours
@@ -123,9 +127,23 @@ class MinerAccountServer(RPCServerBase):
             return None
         now = datetime.now(tz=timezone.utc)
         update_daily_open = (now.hour == 0)
-        count = self._manager.take_account_snapshot(update_daily_open=update_daily_open)
+        count = self._manager.take_account_snapshot(update_daily_open=update_daily_open,
+                                                    drawdown_by_hotkey=self._fetch_drawdown_snapshot_fields())
         self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_hour()
         return f"MinerAccount daemon iteration complete. Snapshots taken: {count}."
+
+    def _fetch_drawdown_snapshot_fields(self) -> dict | None:
+        """Drawdown fields for the hourly snapshots. None (snapshots taken without them) when the
+        challenge period server cannot be reached."""
+        try:
+            if self._challenge_period_client is None:
+                from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+                self._challenge_period_client = ChallengePeriodClient(
+                    connection_mode=self._connection_mode, running_unit_tests=self._running_unit_tests)
+            return self._challenge_period_client.get_drawdown_snapshot_fields()
+        except Exception as e:
+            logger.warning(f"[MINER_ACCOUNT] snapshots taken without drawdown fields: {e}")
+            return None
 
     # ==================== Setup Methods ====================
 

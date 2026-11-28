@@ -103,6 +103,11 @@ class MinerAccount:
             self.collateral_records = []
 
     @property
+    def is_pro_bucket(self) -> bool:
+        """True when the account trades the pro account."""
+        return bool(self.miner_bucket and self.miner_bucket.is_pro)
+
+    @property
     def balance(self) -> float:
         """Current balance = account_size + total_realized_pnl + total_dividend_income - total_fees_paid."""
         return self.get_account_size() + self.total_realized_pnl + self.total_dividend_income - self.total_fees_paid
@@ -1417,6 +1422,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         timestamp_ms: Optional[int] = None,
         reset_snapshot: bool = False,
         update_daily_open: bool = False,
+        drawdown_by_hotkey: Optional[Dict[str, dict]] = None,
     ) -> int:
         """Snapshot account state at the current (or given) UTC day open.
 
@@ -1429,6 +1435,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             update_daily_open: If True, update daily_open_snapshot when a new day is detected.
                                Should only be passed True when firing at the top of the UTC day
                                (hour == 0) to avoid recording a mid-day value as the day open.
+            drawdown_by_hotkey: Optional {hotkey: {intraday_drawdown_pct, eod_drawdown_pct, eod_hwm}}
+                                (ChallengePeriodClient.get_drawdown_snapshot_fields) stamped onto the
+                                snapshot. Hotkeys missing from it keep those fields None.
 
         Returns the number of snapshots recorded.
         """
@@ -1448,11 +1457,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
             else:
                 targets = [a for a in self.accounts.values() if a.miner_bucket != MinerBucket.ELIMINATED]
             for account in targets:
+                drawdown = (drawdown_by_hotkey or {}).get(account.miner_hotkey) or {}
                 snapshot = AccountSnapshot(
                     snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
+                    intraday_drawdown_pct=drawdown.get('intraday_drawdown_pct'),
+                    eod_drawdown_pct=drawdown.get('eod_drawdown_pct'),
+                    eod_hwm=drawdown.get('eod_hwm'),
                 )
                 stored = account.daily_open_snapshot
                 stored_day_open_ms = TimeUtil.get_start_of_day_ms(stored.snapshot_ms) if stored else None

@@ -21,8 +21,7 @@ from time_util.time_util import MS_IN_WEEK, TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.miner_account.standard_miner import PipelineAccountInfo
-from entity_management.entity_utils import is_synthetic_hotkey, pro_payout_scale
+from entity_management.entity_utils import is_synthetic_hotkey
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from shared_objects.log import logger
 
@@ -116,6 +115,13 @@ class WeightCalculatorManager(CacheController):
         )
 
         self._debt_ledger_client = DebtLedgerClient(
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        from entity_management.entity_client import EntityClient
+        self._entity_client = EntityClient(
             running_unit_tests=running_unit_tests,
             connect_immediately=False,
             connection_mode=connection_mode
@@ -278,21 +284,10 @@ class WeightCalculatorManager(CacheController):
                     if not is_synthetic_hotkey(hotkey)]
         return legacy + standard, set(standard)
 
-    def _standard_miner_payout_inputs(self, hotkeys: List[str]) -> Tuple[dict, dict, dict]:
-        """For the standard miners among hotkeys: the Grow multiplier each is paid at, what its earlier accounts
-        settled at a switch, and its sealed weeks."""
-        payout_scales, settled_segments, sealed_weeks = {}, {}, {}
+    def _standard_miners_among(self, hotkeys: List[str]) -> set:
+        """The standard miners among hotkeys, known by their records."""
         paid = set(hotkeys)
-        records = {hotkey: record for hotkey, record in self._miner_account_client.get_standard_accounts().items()
-                   if hotkey in paid}
-        all_settled = self._debt_ledger_client.get_all_settled_segments() if records else {}
-        all_sealed = self._debt_ledger_client.get_sealed_weeks_for(list(records)) if records else {}
-        for hotkey, record in records.items():
-            info = PipelineAccountInfo.from_standard_miner(record)
-            payout_scales[hotkey] = pro_payout_scale(info.standard_account_size, info.pro_account_size, info.payout_scale)
-            settled_segments[hotkey] = all_settled.get(hotkey, [])
-            sealed_weeks[hotkey] = all_sealed.get(hotkey, {})
-        return payout_scales, settled_segments, sealed_weeks
+        return {hotkey for hotkey in self._miner_account_client.get_standard_accounts() if hotkey in paid}
 
     @staticmethod
     def _first_full_week_start_ms(first_timestamp_ms: int) -> int:
@@ -380,22 +375,20 @@ class WeightCalculatorManager(CacheController):
         all_positions = self._position_client.get_positions_for_all_miners()
         all_perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
 
-        # Calculate regular hotkey payouts
+        # Regular miners on the existing rules are paid from their positions; standard miners, like subaccounts,
+        # from their segments' payout table (D4)
         funded_hotkeys, on_pipeline = self._paid_hotkeys()
-        payout_scales, settled_segments, sealed_weeks = self._standard_miner_payout_inputs(funded_hotkeys)
-        standard_miners = set(payout_scales) | on_pipeline
+        standard_miners = on_pipeline | self._standard_miners_among(funded_hotkeys)
+        legacy_hotkeys = [hotkey for hotkey in funded_hotkeys if hotkey not in standard_miners]
 
         # Payout settlements are generated starting the first full week of each miner's debt ledger
         miner_required_payout_settlements = DebtBasedScoring.generate_payout_settlements(
-            hotkeys=funded_hotkeys,
+            hotkeys=legacy_hotkeys,
             miner_positions=all_positions,
             perf_ledgers=all_perf_ledgers,
             debt_ledgers=filtered_debt_ledgers,
             start_time_ms=payout_activation_start_ms,
             end_time_ms=prev_target_end_ms,
-            payout_scales=payout_scales,
-            settled_segments=settled_segments,
-            sealed_weeks=sealed_weeks,
         )
         # Lifetime emissions, kept for logging below.
         all_time_emissions = {
@@ -434,64 +427,41 @@ class WeightCalculatorManager(CacheController):
             for hotkey, payouts in miner_required_payout_settlements.items()
         }
 
-        # Entity miners have no per-week PayoutSettlement (calculate_payout_from_checkpoints
-        # only produces an all-time cumulative HWM total from aggregated subaccount checkpoints).
-        # Reproduce a week-scoped target the same way: take the cumulative total through this
-        # week and through the prior week, and use the difference.
+        standard_tables = {}
+        for hotkey in standard_miners:
+            emissions_checkpoints = all_emissions_ledgers[hotkey].checkpoints if hotkey in all_emissions_ledgers else []
+            try:
+                table = self._entity_client.payout_rows_for_payee(hotkey, prev_target_end_ms)
+            except Exception as e:
+                logger.error(f"[PAYOUT] [{hotkey}] payout table unavailable, no weight this cycle: {e}")
+                miner_required_payouts[hotkey] = 0.0
+                continue
+            result = DebtBasedScoring.payout_table_target(table, emissions_checkpoints, prev_target_end_ms)
+            standard_tables[hotkey] = result
+            miner_required_payouts[hotkey] = result['target']
+            miner_overflow_by_hotkey[hotkey] = result['overflow']
+            miner_required_payouts_raw[hotkey] = result['owed_current_week']
+
+        # Entities are paid from their subaccounts' payout table (D20): the same per-week rows the payout
+        # endpoint reports, times the entity's collateral factor frozen for each week
         entity_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.ENTITY)
         entity_miner_required_payouts = {}
         for hotkey in entity_hotkeys:
-            entity_checkpoints = all_debt_ledgers[hotkey].checkpoints if hotkey in all_debt_ledgers else []
-            checkpoints_through_this_week = [
-                cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms
-            ]
-            checkpoints_through_prior_week = [
-                cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms - MS_IN_WEEK
-            ]
-            cumulative_through_this_week = DebtBasedScoring.calculate_payout_from_checkpoints(
-                checkpoints_through_this_week
-            )
-            cumulative_through_prior_week = DebtBasedScoring.calculate_payout_from_checkpoints(
-                checkpoints_through_prior_week
-            )
-            current_week_required = max(
-                0.0, cumulative_through_this_week - cumulative_through_prior_week
-            )
-
-            # Same underpayment-carry logic as regular hotkeys, applied to entities' checkpoint series.
             entity_emissions_checkpoints = all_emissions_ledgers[hotkey].checkpoints if hotkey in all_emissions_ledgers else []
-            if entity_checkpoints and entity_emissions_checkpoints:
-                first_full_payout_week_ms = self._first_full_week_start_ms(entity_checkpoints[0].timestamp_ms)
-                first_full_emissions_week_ms = self._first_full_week_start_ms(entity_emissions_checkpoints[0].chunk_start_ms)
-                overflow_start_ms = max(first_full_payout_week_ms, first_full_emissions_week_ms)
-
-                payouts_owed_checkpoints = [
-                    cp for cp in entity_checkpoints
-                    if overflow_start_ms <= cp.timestamp_ms <= prev_target_end_ms - MS_IN_WEEK
-                ]
-                payouts_owed = max(0.0, DebtBasedScoring.calculate_payout_from_checkpoints(payouts_owed_checkpoints))
-                emissions_paid = sum(
-                    cp.chunk_emissions_usd for cp in entity_emissions_checkpoints
-                    if overflow_start_ms + MS_IN_WEEK <= cp.chunk_start_ms
-                )
-                overflow = max(0.0, payouts_owed - emissions_paid)
-            else:
-                overflow = 0.0
-            entity_miner_required_payouts[hotkey] = current_week_required + overflow
-            # Small hotkey count (few entities); log unconditionally, not gated on `verbose`,
-            # so this is visible on every run while diagnosing the this-week-vs-prior-week diff.
-            latest_ts = entity_checkpoints[-1].timestamp_ms if entity_checkpoints else None
-            latest_str = TimeUtil.millis_to_short_date_str(latest_ts) if latest_ts else "n/a"
+            try:
+                table = self._entity_client.payout_rows_for_payee(hotkey, prev_target_end_ms)
+            except Exception as e:
+                # Retried next cycle; the entity gets no weight from this one rather than a guessed one
+                logger.error(f"[PAYOUT_ENTITY] [{hotkey}] payout table unavailable, no weight this cycle: {e}")
+                entity_miner_required_payouts[hotkey] = 0.0
+                continue
+            result = DebtBasedScoring.payout_table_target(table, entity_emissions_checkpoints, prev_target_end_ms)
+            entity_miner_required_payouts[hotkey] = result['target']
             logger.info(
-                f"[PAYOUT_ENTITY_DEBUG] [{hotkey}] total_checkpoints={len(entity_checkpoints)}, "
-                f"latest_checkpoint={latest_str}, "
-                f"checkpoints_through_this_week={len(checkpoints_through_this_week)} "
-                f"(cumulative=${cumulative_through_this_week:.2f}), "
-                f"checkpoints_through_prior_week={len(checkpoints_through_prior_week)} "
-                f"(cumulative=${cumulative_through_prior_week:.2f}), "
-                f"all_time_emissions=${all_time_emissions.get(hotkey, 0.0):.2f}, "
-                f"overflow=${overflow:.2f}, "
-                f"weekly_target=${entity_miner_required_payouts[hotkey]:.2f}"
+                f"[PAYOUT_ENTITY] [{hotkey}] current_week=${result['owed_current_week']:.2f}, "
+                f"overflow=${result['overflow']:.2f}, weekly_target=${result['target']:.2f}, "
+                f"all_time_emissions=${all_time_emissions.get(hotkey, 0.0):.2f}"
+                + (f", unsettled subaccounts left out={table['missing']}" if table.get('missing') else "")
             )
 
         # Combine miner and entity weekly targets into a unified dict
@@ -566,16 +536,10 @@ class WeightCalculatorManager(CacheController):
         # A standard miner's weight is a share of the day's emissions: its target is what it is still owed (closed weeks
         # owed less emissions received since) over the days left, so a day's error is made up on the next days
         capped_targets = {}
-        for hotkey in standard_miners:
-            payouts = miner_required_payout_settlements.get(hotkey) or []
-            emissions_checkpoints = all_emissions_ledgers[hotkey].checkpoints if hotkey in all_emissions_ledgers else []
-            if not payouts or not emissions_checkpoints:
+        for hotkey, result in standard_tables.items():
+            if result['unpaid_now'] is None:
                 continue  # nothing received on record yet: the day's figure stands
-            owed_since_ms = max(payouts[0].start_ms, self._first_full_week_start_ms(emissions_checkpoints[0].chunk_start_ms))
-            owed_usd = sum(p.payout_penalized for p in payouts if p.start_ms >= owed_since_ms)
-            paid_usd = sum(cp.chunk_emissions_usd for cp in emissions_checkpoints
-                           if cp.chunk_start_ms >= owed_since_ms + MS_IN_WEEK)
-            capped_targets[hotkey] = max(0.0, owed_usd - paid_usd) / days_until_target
+            capped_targets[hotkey] = result['unpaid_now'] / days_until_target
         # Whether the week's emissions cover everything owed decides the cap for the whole week
         emissions_cover_owed = projected_daily_usd > 0 and projected_daily_usd * 7 >= total_remaining_payout_usd
         cap_applied = emissions_cover_owed and any(hotkey in miner_daily_target_payouts_usd for hotkey in standard_miners)

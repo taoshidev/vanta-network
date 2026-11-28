@@ -10,13 +10,7 @@ from typing import Dict, List, Optional
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
 from vali_objects.vali_config import RPCConnectionMode
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import (
-    DebtLedger,
-    DebtCheckpoint,
-    WeekTrack,
-    WeeklyPayoutContext,
-    apply_deferral,
-)
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.standard_miner import PipelineAccountInfo, StandardMinerAccount
@@ -123,11 +117,6 @@ class DebtLedgerManager():
             validator_hotkey=validator_hotkey
         )
 
-        # Survives every ledger rebuild and every ledger deletion; it is what makes a closed payout
-        # week reproduce the same paid/withheld decision no matter what else is recomputed.
-        # Built lazily by the property below so a partially constructed manager still works.
-        self._weekly_seal_ledger = None
-
         self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)
         self.running_unit_tests = running_unit_tests
         self.is_mainnet = is_mainnet
@@ -185,7 +174,6 @@ class DebtLedgerManager():
             logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only an account on the standard account "
                          f"pipeline (a subaccount or a standard miner) can have its ledgers deleted")
             return False
-        # NOTE: weekly_seal_ledger is deliberately untouched.
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
@@ -201,136 +189,6 @@ class DebtLedgerManager():
         except Exception as e:
             logger.warning(f"[DEBT_LEDGER] Could not read the account of {hotkey}: {e}")
             return False
-
-    @property
-    def weekly_seal_ledger(self):
-        """The settled-week record, built on first use.
-
-        Lazy so a manager assembled without __init__ (unit tests, one-off tooling) still reaches a
-        working seal ledger rather than an AttributeError in the middle of aggregation.
-        """
-        existing = getattr(self, '_weekly_seal_ledger', None)
-        if existing is None:
-            from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import WeeklySealLedger
-            existing = WeeklySealLedger(running_unit_tests=getattr(self, 'running_unit_tests', False))
-            self._weekly_seal_ledger = existing
-        return existing
-
-    def _seal_closed_weeks(self, subaccount_ledgers: list, subaccount_payout_scale: dict) -> None:
-        """Pin the classification of every payout week that has closed.
-
-        The context is computed fresh here on purpose: `seal` refuses to overwrite a week that is
-        already settled and logs when the fresh values disagree, which is how a rebuild that would
-        have rewritten history announces itself instead of doing it silently.
-        """
-        current_week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
-        newly_sealed = 0
-        for synthetic_hotkey, ledger in subaccount_ledgers:
-            context = ledger.weekly_payout_context(subaccount_payout_scale.get(synthetic_hotkey, 1.0))
-            for week_start_ms, week in context.items():
-                if week_start_ms >= current_week_start_ms:
-                    continue
-                if self.weekly_seal_ledger.seal(
-                    synthetic_hotkey,
-                    week_start_ms,
-                    weekly_penalty=week.weekly_penalty,
-                    payout_scale=week.payout_scale,
-                    track=week.track.name,
-                    first_earning_ms=week.first_earning_ms,
-                ):
-                    newly_sealed += 1
-
-        if newly_sealed:
-            self.weekly_seal_ledger.save_to_disk()
-            logger.info(f"[DEBT_LEDGER] Sealed {newly_sealed} newly closed payout weeks")
-
-    def get_sealed_weeks(self, hotkey: str) -> dict:
-        """Sealed payout weeks for one hotkey, keyed by Monday 00:00 UTC."""
-        return self.weekly_seal_ledger.get_sealed(hotkey)
-
-    def unseal_week(self, hotkey: str, week_start_ms: int) -> bool:
-        """Drop one sealed week so the next build reseals it. Deliberate corrections only."""
-        return self.weekly_seal_ledger.unseal(hotkey, week_start_ms)
-
-    def record_settled_segment(
-        self,
-        hotkey: str,
-        week_start_ms: int,
-        segment_start_ms: int,
-        segment_end_ms: int,
-        bucket: str,
-        payout_usd: float,
-        gross_payout_usd: float,
-        weekly_penalty: float,
-        payout_scale: float,
-    ) -> bool:
-        """Pin a payout settled early by an account switch.
-
-        Write-once on (hotkey, week_start_ms, bucket) so a retried switch cannot settle the same
-        week twice.
-        """
-        return self.weekly_seal_ledger.record_settled(
-            hotkey,
-            week_start_ms=week_start_ms,
-            segment_start_ms=segment_start_ms,
-            segment_end_ms=segment_end_ms,
-            bucket=bucket,
-            payout_usd=payout_usd,
-            gross_payout_usd=gross_payout_usd,
-            weekly_penalty=weekly_penalty,
-            payout_scale=payout_scale,
-        )
-
-    def get_settled_segments(self, hotkey: str) -> list:
-        """Segments settled early for one hotkey, oldest first."""
-        return self.weekly_seal_ledger.get_settled(hotkey)
-
-    def get_all_settled_segments(self) -> Dict[str, list]:
-        """Every hotkey's settled segments, oldest first."""
-        return self.weekly_seal_ledger.get_all_settled()
-
-    def get_sealed_weeks_for(self, hotkeys: List[str]) -> Dict[str, dict]:
-        """The sealed weeks of each of hotkeys that has any, keyed by Monday 00:00 UTC."""
-        return self.weekly_seal_ledger.get_sealed_for(hotkeys)
-
-    def _seal_standard_miner_weeks(self) -> None:
-        """Seal the closed weeks of every standard miner's ledger as the aggregation seals a subaccount's, so a
-        rebuild or a changed multiplier cannot reprice or reclassify a week already paid. Never fails the build."""
-        try:
-            records = self._miner_account_client.get_standard_accounts()
-            ledgers, scales = [], {}
-            for hotkey, record in records.items():
-                ledger = self.debt_ledgers.get(hotkey)
-                if ledger is None or not ledger.checkpoints:
-                    continue
-                info = PipelineAccountInfo.from_standard_miner(record)
-                scales[hotkey] = entity_utils.pro_payout_scale(info.standard_account_size, info.pro_account_size, info.payout_scale)
-                ledgers.append((hotkey, ledger))
-            if ledgers:
-                self._seal_closed_weeks(ledgers, scales)
-        except Exception as e:
-            logger.error(f"[DEBT_LEDGER] Could not seal the standard miners' closed weeks: {e}", exc_info=True)
-
-    def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
-        """Correct a settled segment's amount. Deliberate corrections only."""
-        return self.weekly_seal_ledger.amend_settled(hotkey, segment_end_ms, payout_usd)
-
-    def remove_settled_segment(self, hotkey: str, segment_end_ms: int) -> bool:
-        """Drop a settled segment entirely. Deliberate corrections only."""
-        return self.weekly_seal_ledger.remove_settled(hotkey, segment_end_ms)
-
-    def get_weekly_seals_checkpoint_dict(self) -> dict:
-        """Every sealed week and settled segment, JSON-ready, for the validator checkpoint."""
-        return self.weekly_seal_ledger.to_checkpoint_dict()
-
-    def sync_weekly_seals(self, weekly_seals_dict: dict) -> dict:
-        """Merge the checkpoint's seal records so validators agree on what was sealed."""
-        return self.weekly_seal_ledger.sync_from_checkpoint(weekly_seals_dict)
-
-    def clear_weekly_seals_for_test(self) -> bool:
-        """Drop every seal record, in memory and on disk. Unit tests only."""
-        self.weekly_seal_ledger.clear_for_test()
-        return True
 
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None
@@ -924,7 +782,6 @@ class DebtLedgerManager():
 
         # Direct assignment to normal dict (no IPC overhead!)
         self.debt_ledgers = candidate_ledgers
-        self._seal_standard_miner_weeks()
 
         # Aggregate entity debt ledgers before saving so entity ledgers are persisted and cached
         logger.info("Aggregating entity debt ledgers...")
@@ -947,7 +804,7 @@ class DebtLedgerManager():
 
     def aggregate_entity_debt_ledgers(self, target_cp_duration_ms: int, verbose: bool = False):
         """
-        Aggregate debt ledgers from all active subaccounts under their entity hotkeys.
+        Aggregate debt ledgers from all active subaccounts under their entity hotkeys, for display.
 
         This method should be called after build_debt_ledgers() completes to ensure
         all subaccount ledgers are up-to-date before aggregation.
@@ -958,11 +815,14 @@ class DebtLedgerManager():
         - Store aggregated ledger under entity_hotkey
 
         Aggregation rules:
-        - Sum: emissions, realized PnL, fees, open_ms, n_updates, balances
+        - Sum: emissions, realized PnL, open_ms, n_updates, balances
         - Weighted average: portfolio_return (weighted by max_portfolio_value)
         - Worst case: max_drawdown (take minimum)
         - Max: max_portfolio_value (sum across subaccounts)
-        - Ignore: penalties, unrealized pnl
+        - Ignore: penalties, unrealized pnl, fees
+
+        Nothing here is paid: the weights read the subaccounts' payout table
+        (EntityManager.payout_rows_for_payee), so realized_pnl is the plain sum of the subaccounts'.
 
         Args:
             target_cp_duration_ms: Target checkpoint duration in milliseconds
@@ -978,50 +838,23 @@ class DebtLedgerManager():
 
             logger.info(f"Aggregating debt ledgers for {len(all_entities)} entities")
 
-            _earning_statuses = {b.value for b in MinerBucket if b.is_subaccount_earning}
+            _earning_statuses = {status for b in MinerBucket if b.is_subaccount_earning for status in b.statuses}
 
-            # Get frozen perf ledgers and convert to debt ledgers grouped by entity
-            # Manually conver them to debt ledger checkpoints to reuse realized hwm gated emissions
+            # Frozen perf ledgers of eliminated subaccounts, as debt checkpoints, so the entity's
+            # history still shows them
             frozen_perf_ledgers = self._perf_ledger_client.get_frozen_ledgers()
             entity_to_frozen_debt_ledgers: Dict[str, list] = {}
             for synthetic_hotkey, perf_ledger in frozen_perf_ledgers.items():
                 entity_hk, _ = entity_utils.parse_synthetic_hotkey(synthetic_hotkey)
                 if entity_hk is None or not perf_ledger.cps:
                     continue
-
-                # The penalty ledger outlives elimination (only an account switch deletes it), so
-                # a pro subaccount's withheld weeks stay withheld instead of being paid in full
-                # the moment its perf ledger is frozen.
-                penalty_ledger = self.penalty_ledger_manager.get_penalty_ledger(synthetic_hotkey)
-
-                debt_checkpoints = []
-                # Ledgers are only frozen for earning buckets, so a checkpoint the penalty ledger
-                # did not stamp with an earning status inherits the last earning one this hotkey
-                # actually held. Hard-coding SUBACCOUNT_FUNDED here would silently move a frozen
-                # PRO_FUNDED subaccount off the soft-breach track and forfeit its escrow.
-                last_earning_status = MinerBucket.SUBACCOUNT_FUNDED.value
-                if penalty_ledger:
-                    for penalty_cp in penalty_ledger.checkpoints:
-                        if penalty_cp.challenge_period_status in _earning_statuses:
-                            last_earning_status = penalty_cp.challenge_period_status
-
-                for cp in perf_ledger.cps:
-                    if cp.accum_ms != target_cp_duration_ms:
-                        continue
-                    penalty_cp = (
-                        penalty_ledger.get_checkpoint_at_time(cp.last_update_ms, target_cp_duration_ms)
-                        if penalty_ledger else None
-                    )
-                    frozen_status = last_earning_status
-                    if penalty_cp and penalty_cp.challenge_period_status in _earning_statuses:
-                        frozen_status = penalty_cp.challenge_period_status
-
-                    debt_cp = DebtCheckpoint(
+                debt_checkpoints = [
+                    DebtCheckpoint(
                         timestamp_ms=cp.last_update_ms,
                         realized_pnl=cp.realized_pnl,
                         cumulative_fees_usd=cp.cumulative_fees_usd,
-                        weekly_penalty=penalty_cp.weekly_penalty if penalty_cp else 1.0,
-                        challenge_period_status=frozen_status,
+                        # Ledgers are only frozen for earning buckets
+                        challenge_period_status=MinerBucket.SUBACCOUNT_FUNDED.value,
                         max_portfolio_value=cp.mpv,
                         max_drawdown=cp.mdd,
                         portfolio_return=cp.gain,
@@ -1029,13 +862,11 @@ class DebtLedgerManager():
                         accum_ms=cp.accum_ms,
                         n_updates=cp.n_updates,
                     )
-                    debt_checkpoints.append(debt_cp)
-
+                    for cp in perf_ledger.cps if cp.accum_ms == target_cp_duration_ms
+                ]
                 if debt_checkpoints:
-                    frozen_debt_ledger = DebtLedger(hotkey=synthetic_hotkey, checkpoints=debt_checkpoints)
-                    if entity_hk not in entity_to_frozen_debt_ledgers:
-                        entity_to_frozen_debt_ledgers[entity_hk] = []
-                    entity_to_frozen_debt_ledgers[entity_hk].append((synthetic_hotkey, frozen_debt_ledger))
+                    entity_to_frozen_debt_ledgers.setdefault(entity_hk, []).append(
+                        (synthetic_hotkey, DebtLedger(hotkey=synthetic_hotkey, checkpoints=debt_checkpoints)))
 
             if entity_to_frozen_debt_ledgers:
                 logger.info(f"Converted frozen perf ledgers to debt ledgers for {len(entity_to_frozen_debt_ledgers)} entities")
@@ -1052,22 +883,6 @@ class DebtLedgerManager():
                         logger.info(f"Entity {entity_hotkey} has no active subaccounts or frozen ledgers - skipping")
                     continue
 
-                # Built over every subaccount rather than only the active ones. An eliminated
-                # subaccount still reaches this aggregation through its frozen ledger, and its
-                # closed weeks get sealed below;
-                subaccount_payout_scale = {}
-                for subaccount in entity_data.get('subaccounts', {}).values():
-                    synthetic_hotkey = subaccount.get('synthetic_hotkey')
-                    if not synthetic_hotkey:
-                        continue
-
-                    scale = entity_utils.pro_payout_scale(
-                        subaccount.get('standard_account_size'), subaccount.get('pro_account_size'),
-                        subaccount.get('payout_scale')
-                    )
-                    if scale != 1.0:
-                        subaccount_payout_scale[synthetic_hotkey] = scale
-
                 # Get debt ledgers for all active subaccounts
                 subaccount_ledgers = []
                 for subaccount in active_subaccounts:
@@ -1080,8 +895,7 @@ class DebtLedgerManager():
                         subaccount_ledgers.append((synthetic_hotkey, ledger))
 
                 # Add frozen debt ledgers for this entity
-                frozen_ledgers_for_entity = entity_to_frozen_debt_ledgers.get(entity_hotkey, [])
-                subaccount_ledgers.extend(frozen_ledgers_for_entity)
+                subaccount_ledgers.extend(entity_to_frozen_debt_ledgers.get(entity_hotkey, []))
 
                 if not subaccount_ledgers:
                     if verbose:
@@ -1091,22 +905,15 @@ class DebtLedgerManager():
                         )
                     continue
 
-                # Collect all unique timestamps across all subaccount ledgers
-                all_timestamps = set()
-                for _, ledger in subaccount_ledgers:
-                    for checkpoint in ledger.checkpoints:
-                        all_timestamps.add(checkpoint.timestamp_ms)
-
-                if not all_timestamps:
+                sorted_timestamps = sorted({checkpoint.timestamp_ms for _, ledger in subaccount_ledgers
+                                            for checkpoint in ledger.checkpoints})
+                if not sorted_timestamps:
                     continue
-
-                # Sort timestamps chronologically
-                sorted_timestamps = sorted(all_timestamps)
 
                 entity_emissions_ledger = self.emissions_ledger_manager.get_ledger(entity_hotkey)
 
-                # Compute entity collateral penalty: current_collateral / required_collateral (capped at 1.0).
-                # If nothing is required, no penalty. If current is unavailable, treat as 0.
+                # The entity collateral ratio in force now, shown on the checkpoints. The weights apply the
+                # factor frozen for each closed week (EntityManager.collateral_factors) instead.
                 try:
                     required_collateral = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
                     current_collateral = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
@@ -1117,61 +924,15 @@ class DebtLedgerManager():
 
                 entity_collateral_penalty = 1.0 if required_collateral <= 0 else min(1.0, (current_collateral or 0.0) / required_collateral)
 
-                # Track per-subaccount HWM state for realized PnL across checkpoints, plus the
-                # escrow holding payouts withheld by a soft breach until a clean week releases them
-                subaccount_cum_realized = {hk: 0.0 for hk, _ in subaccount_ledgers}
-                subaccount_hwm = {hk: 0.0 for hk, _ in subaccount_ledgers}
-                subaccount_escrow = {hk: 0.0 for hk, _ in subaccount_ledgers}
-                # cumulative_fees_usd runs from ledger inception, but cum_realized only starts
-                # accumulating at the first earning checkpoint. Without a baseline, a subaccount
-                # that ran a pro challenge on this account would have the challenge's fees
-                # subtracted from its funded earnings.
-                subaccount_fee_baseline = {
-                    hk: ledger.fee_baseline_at_first_earning() for hk, ledger in subaccount_ledgers
-                }
-
-                # Payouts settled early because an account switch was about to wipe the account
-                # they were traded on.
-                pending_settled = {}
-                for subaccount in entity_data.get('subaccounts', {}).values():
-                    synthetic_hotkey = subaccount.get('synthetic_hotkey')
-                    if not synthetic_hotkey:
-                        continue
-                    segments = self.weekly_seal_ledger.get_settled(synthetic_hotkey)
-                    if segments:
-                        pending_settled[synthetic_hotkey] = segments
-
-                # Pin every week that has already closed before reading the context back, so the
-                # decision this build would make becomes the settled one exactly once.
-                self._seal_closed_weeks(subaccount_ledgers, subaccount_payout_scale)
-
-                # Widen each subaccount's weekly penalty across its whole payout week: a breach is
-                # only stamped on the breaching checkpoint, so the worst value in a week governs it.
-                # Sealed weeks come back verbatim rather than recomputed.
-                subaccount_week_context = {
-                    synthetic_hotkey: ledger.weekly_payout_context(
-                        subaccount_payout_scale.get(synthetic_hotkey, 1.0),
-                        sealed=self.weekly_seal_ledger.get_sealed(synthetic_hotkey),
-                    )
-                    for synthetic_hotkey, ledger in subaccount_ledgers
-                }
-                # A week with no checkpoints of its own has no sealed ratio to honor, so it falls
-                # back to the account's current one rather than to an unscaled 1.0.
-                subaccount_default_week = {
-                    synthetic_hotkey: WeeklyPayoutContext(
-                        payout_scale=subaccount_payout_scale.get(synthetic_hotkey, 1.0)
-                    )
-                    for synthetic_hotkey, _ledger in subaccount_ledgers
-                }
+                # Use entity's actual challenge period bucket status, not aggregate of subaccounts
+                bucket = self._challengeperiod_client.get_miner_bucket(entity_hotkey)
+                entity_bucket = str(bucket.value) if bucket else "unknown"
 
                 # Create aggregated checkpoints for each timestamp
                 aggregated_checkpoints = []
-                settled_pending_usd = 0.0
                 for timestamp_ms in sorted_timestamps:
                     # Collect earning checkpoints from all subaccounts at this timestamp
                     checkpoints_at_time = []
-                    agg_realized_pnl = 0.0
-                    week_start_ms = TimeUtil.ms_at_start_of_week(timestamp_ms - 1)
                     for synthetic_hotkey, ledger in subaccount_ledgers:
                         try:
                             checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
@@ -1179,100 +940,14 @@ class DebtLedgerManager():
                             raise ValueError(f"[hotkey={synthetic_hotkey}] {e}") from e
                         if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
                             checkpoints_at_time.append(checkpoint)
-                            week = subaccount_week_context[synthetic_hotkey].get(
-                                week_start_ms, subaccount_default_week[synthetic_hotkey]
-                            )
 
-                            # Settle the escrow on the week's first earning checkpoint. Releasing
-                            # at the start of the week rather than the end keeps the whole balance
-                            # inside the week the weight calculator reads it in, and the decision
-                            # itself comes from the full-week penalty resolved above.
-                            if timestamp_ms == week.first_earning_ms:
-                                # Forfeiture is deliberately dropped here: nothing is withheld at this
-                                # call (withheld=0.0), and a forfeited balance only has to leave the
-                                # escrow, which the carried-forward value already does. Only releases
-                                # add to realized PnL. The payout path reports forfeiture instead.
-                                released, subaccount_escrow[synthetic_hotkey], _forfeited = apply_deferral(
-                                    subaccount_escrow[synthetic_hotkey],
-                                    0.0,
-                                    track=week.track,
-                                    week_penalty=week.weekly_penalty,
-                                )
-                                agg_realized_pnl += released
-
-                            subaccount_cum_realized[synthetic_hotkey] += checkpoint.realized_pnl
-
-                            fees_since_earning = (
-                                checkpoint.cumulative_fees_usd - subaccount_fee_baseline[synthetic_hotkey]
-                            )
-
-                            net_realized = subaccount_cum_realized[synthetic_hotkey] - fees_since_earning
-                            if net_realized > subaccount_hwm[synthetic_hotkey]:
-                                delta = net_realized - subaccount_hwm[synthetic_hotkey]
-                                subaccount_hwm[synthetic_hotkey] = net_realized
-
-                                # Price the delta at the scale in force at *this* checkpoint, not
-                                # the week's: a subaccount promoting mid-week trades part of it on
-                                # the standard payout basis and the rest on the pro one. The ratio
-                                # comes from the week rather than the live map so that a sealed
-                                # week keeps paying at the ratio it settled at even after the
-                                # account is resized; the per-checkpoint bucket gate still decides
-                                # whether it applies at all.
-                                scale = DebtLedger.checkpoint_payout_scale(
-                                    checkpoint, week.payout_scale
-                                )
-                                # Withholds only in the buckets it governs, so
-                                # a subaccount promoted mid-week is paid in
-                                # full for the stretch it traded before the pro rules applied to
-                                # it.
-                                penalty = DebtLedger.checkpoint_weekly_penalty(
-                                    checkpoint, week.weekly_penalty
-                                )
-                                # The HWM advances on gross terms; the blocked portion is held in
-                                # escrow instead, so netting the HWM down would pay it twice.
-                                owed = delta * scale
-                                earned = owed * penalty
-                                agg_realized_pnl += earned
-                                if week.track is WeekTrack.ON_TRACK:
-                                    subaccount_escrow[synthetic_hotkey] += owed - earned
-
-                    # Drain every segment settled at or before this checkpoint. These are already
-                    # settled dollars - scaled, penalized and past their high water mark - so they
-                    # are added to the aggregate as-is rather than run back through the HWM above.
-                    for segments in pending_settled.values():
-                        while segments and segments[0].segment_end_ms <= timestamp_ms:
-                            settled_pending_usd += segments.pop(0).payout_usd
-
-                    # An aggregated checkpoint is built out of the subaccount checkpoints at this
-                    # timestamp and cannot be synthesized without them. A settled segment drained
-                    # into a skipped slot therefore stays pending and lands on the next checkpoint
-                    # that is emitted, which keeps it inside the payout week it was earned in.
                     if not checkpoints_at_time:
                         continue
-
-                    agg_realized_pnl += settled_pending_usd
-                    settled_pending_usd = 0.0
 
                     # Get entity emissions checkpoint for this timestamp
                     entity_emissions_cp = entity_emissions_ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms) if entity_emissions_ledger else None
 
-                    # Aggregate fields across all subaccounts at this timestamp
-                    # Sum additive fields
                     # Use entity emissions if available, otherwise zero (for newly registered entities)
-                    chunk_emissions_alpha = getattr(entity_emissions_cp, "chunk_emissions", 0.0)
-                    chunk_emissions_tao = getattr(entity_emissions_cp, "chunk_emissions_tao", 0.0)
-                    chunk_emissions_usd = getattr(entity_emissions_cp, "chunk_emissions_usd", 0.0)
-                    alpha_to_tao_rate = getattr(entity_emissions_cp, "avg_alpha_to_tao_rate", 0.0)
-                    tao_to_usd_rate = getattr(entity_emissions_cp, "avg_tao_to_usd_rate", 0.0)
-                    tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
-                    alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
-                    agg_unrealized_pnl = 0.0    # ignore unrealized pnl
-                    agg_cumulative_fees_usd = 0.0    # ignore fees - included in agg realized pnl
-                    agg_max_portfolio_value = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
-                    agg_open_ms = sum(cp.open_ms for cp in checkpoints_at_time)
-                    agg_n_updates = sum(cp.n_updates for cp in checkpoints_at_time)
-
-                    # Weighted average for portfolio_return (weighted by max_portfolio_value)
                     total_weight = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
                     if total_weight > 0:
                         agg_portfolio_return = sum(
@@ -1283,37 +958,27 @@ class DebtLedgerManager():
                         # If no weight, use simple average
                         agg_portfolio_return = sum(cp.portfolio_return for cp in checkpoints_at_time) / len(checkpoints_at_time)
 
-                    # Worst case for max_drawdown (minimum = worst drawdown)
-                    agg_max_drawdown = min(cp.max_drawdown for cp in checkpoints_at_time)
-
-                    # Use entity's actual challenge period bucket status, not aggregate of subaccounts
-                    bucket = self._challengeperiod_client.get_miner_bucket(entity_hotkey)
-                    entity_bucket = str(bucket.value) if bucket else "unknown"
-
-                    # Use accum_ms from first checkpoint (should be same for all at this timestamp)
-                    agg_accum_ms = checkpoints_at_time[0].accum_ms
-
-                    # Create aggregated checkpoint
-                    aggregated_checkpoint = DebtCheckpoint(
+                    aggregated_checkpoints.append(DebtCheckpoint(
                         timestamp_ms=timestamp_ms,
                         # Emissions
-                        chunk_emissions_alpha=chunk_emissions_alpha,
-                        chunk_emissions_tao=chunk_emissions_tao,
-                        chunk_emissions_usd=chunk_emissions_usd,
-                        avg_alpha_to_tao_rate=alpha_to_tao_rate,
-                        avg_tao_to_usd_rate=tao_to_usd_rate,
-                        tao_balance_snapshot=tao_balance,
-                        alpha_balance_snapshot=alpha_balance,
+                        chunk_emissions_alpha=getattr(entity_emissions_cp, "chunk_emissions", 0.0),
+                        chunk_emissions_tao=getattr(entity_emissions_cp, "chunk_emissions_tao", 0.0),
+                        chunk_emissions_usd=getattr(entity_emissions_cp, "chunk_emissions_usd", 0.0),
+                        avg_alpha_to_tao_rate=getattr(entity_emissions_cp, "avg_alpha_to_tao_rate", 0.0),
+                        avg_tao_to_usd_rate=getattr(entity_emissions_cp, "avg_tao_to_usd_rate", 0.0),
+                        tao_balance_snapshot=getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0),
+                        alpha_balance_snapshot=getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0),
                         # Performance
                         portfolio_return=agg_portfolio_return,
-                        realized_pnl=agg_realized_pnl,
-                        unrealized_pnl=agg_unrealized_pnl,
-                        cumulative_fees_usd=agg_cumulative_fees_usd,
-                        max_drawdown=agg_max_drawdown,
-                        max_portfolio_value=agg_max_portfolio_value,
-                        open_ms=agg_open_ms,
-                        accum_ms=agg_accum_ms,
-                        n_updates=agg_n_updates,
+                        realized_pnl=sum(cp.realized_pnl for cp in checkpoints_at_time),
+                        unrealized_pnl=0.0,
+                        cumulative_fees_usd=0.0,
+                        # Worst case for max_drawdown (minimum = worst drawdown)
+                        max_drawdown=min(cp.max_drawdown for cp in checkpoints_at_time),
+                        max_portfolio_value=total_weight,
+                        open_ms=sum(cp.open_ms for cp in checkpoints_at_time),
+                        accum_ms=checkpoints_at_time[0].accum_ms,
+                        n_updates=sum(cp.n_updates for cp in checkpoints_at_time),
                         # Penalties: only entity collateral penalty applies at the entity level
                         drawdown_penalty=1.0,
                         risk_profile_penalty=1.0,
@@ -1321,30 +986,13 @@ class DebtLedgerManager():
                         risk_adjusted_performance_penalty=1.0,
                         total_penalty=entity_collateral_penalty,
                         challenge_period_status=entity_bucket,
-                    )
-
-                    aggregated_checkpoints.append(aggregated_checkpoint)
-
-                # A segment settled after the last checkpoint has nowhere to land yet. It is not
-                # lost: this aggregation is rebuilt from the seal ledger on every build, so the
-                # next one places it once a checkpoint exists past the switch.
-                leftover = settled_pending_usd + sum(
-                    segment.payout_usd for segments in pending_settled.values() for segment in segments
-                )
-                if leftover:
-                    logger.info(
-                        f"Entity {entity_hotkey} has ${leftover:.2f} of settled segments past its "
-                        f"last checkpoint; they will be aggregated once checkpoints catch up"
-                    )
+                    ))
 
                 if not aggregated_checkpoints:
                     continue
 
                 # Create aggregated debt ledger for entity
-                entity_ledger = DebtLedger(entity_hotkey, checkpoints=aggregated_checkpoints)
-
-                # Store in debt_ledgers dict
-                self.debt_ledgers[entity_hotkey] = entity_ledger
+                self.debt_ledgers[entity_hotkey] = DebtLedger(entity_hotkey, checkpoints=aggregated_checkpoints)
                 entity_count += 1
 
                 if verbose:

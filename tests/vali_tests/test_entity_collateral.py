@@ -625,22 +625,6 @@ class TestEntityCollateral(TestBase):
             self.entity_collateral_client.get_cached_collateral(entity_hotkey), balance_after_first
         )
 
-    def test_the_transition_bucket_is_not_charged(self):
-        """PRO_CHALLENGE_TRANSITION still trades the standard account, so nothing is billed yet."""
-        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
-        self._set_collateral_cache(entity_hotkey, 1_000.0)
-
-        success, message = self.entity_client.apply_bucket_account_size(
-            synthetic_hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 1_000_000
-        )
-
-        self.assertTrue(success, message)
-        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
-        self.assertAlmostEqual(subaccount["account_size"], 100_000)
-        self.assertAlmostEqual(subaccount["pro_account_size"], 1_000_000)
-        self.assertAlmostEqual(subaccount["pro_fee_theta"], 0.0)
-        self.assertAlmostEqual(self.entity_collateral_client.get_cached_collateral(entity_hotkey), 1_000.0)
-
     def test_a_rolled_back_promotion_gives_the_fee_back(self):
         """A bucket move that fails after the resize must not leave the entity paying for it."""
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)

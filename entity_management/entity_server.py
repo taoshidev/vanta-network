@@ -308,11 +308,12 @@ class EntityServer(RPCServerBase):
         """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
         return self._manager.get_payout_scale(synthetic_hotkey)
 
-    def settle_wound_down_segment_rpc(
-        self, synthetic_hotkey: str, from_bucket: str, promotion_ms: int
-    ) -> bool:
-        """Settle this payout week's earnings before an account switch wipes the account."""
-        return self._manager.settle_wound_down_segment(synthetic_hotkey, from_bucket, promotion_ms)
+    def calculate_segment_payout_record_rpc(self, hotkey: str, segment: dict, positions: list,
+                                            end_ms: int, realtime: bool = True) -> Optional[dict]:
+        return self._manager.calculate_segment_payout_record(hotkey, segment, positions, end_ms, realtime)
+
+    def calculate_segment_closed_weeks_rpc(self, hotkey: str, segment: dict, now_ms: int) -> Optional[list]:
+        return self._manager.calculate_segment_closed_weeks(hotkey, segment, now_ms)
 
     def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
         """
@@ -469,7 +470,8 @@ class EntityServer(RPCServerBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: Optional[int]
+        end_time_ms: Optional[int],
+        instant_payouts: Optional[List[dict]] = None,
     ) -> Optional[dict]:
         """
         RPC method to calculate payout for a subaccount.
@@ -485,8 +487,12 @@ class EntityServer(RPCServerBase):
         return self._manager.calculate_subaccount_payout(
             subaccount_uuid,
             start_time_ms,
-            end_time_ms
+            end_time_ms,
+            instant_payouts,
         )
+
+    def payout_rows_for_payee_rpc(self, payee: str, through_ms: int) -> dict:
+        return self._manager.payout_rows_for_payee(payee, through_ms)
 
     # ==================== Validator Broadcast RPC Methods ====================
 

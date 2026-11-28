@@ -8,7 +8,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.limit_order.order_trigger import (
@@ -21,12 +20,6 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 from vali_objects.enums.order_source_enum import OrderSource
 from shared_objects.log import logger
-
-PRO_TRANSITION_REJECTION = (
-    "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
-    "existing ones - close your open positions to begin trading your Pro Account."
-)
-
 
 class LimitOrderManager(CacheController):
     """
@@ -350,29 +343,6 @@ class LimitOrderManager(CacheController):
             return False
         return open_position is None or order.order_type == open_position.position_type
 
-    def _is_transitioning_to_pro(self, miner_hotkey):
-        """True while the miner is winding their standard account down to start a pro account."""
-        account = self._miner_account_client.get_account(miner_hotkey)
-        return account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
-
-    def _blocked_by_pro_transition(self, miner_hotkey, order):
-        """Whether PRO_CHALLENGE_TRANSITION blocks this order, fetching the position only when it
-        could matter. Used at fill time as well as at placement: a resting order that reduced a
-        position when it was placed becomes an entry order once that position closes."""
-        if order.execution_type == ExecutionType.BRACKET or order.order_type == OrderType.FLAT:
-            return False
-        if not self._is_transitioning_to_pro(miner_hotkey):
-            return False
-        return self._increases_exposure(order, self._get_open_position(miner_hotkey, order))
-
-    def _reject_if_transitioning_to_pro(self, miner_hotkey, order, open_position):
-        """Block orders that would open or increase exposure while a miner winds down their
-        standard account before starting a pro account. Brackets only ever reduce, so they pass."""
-        if not self._increases_exposure(order, open_position):
-            return
-        if self._is_transitioning_to_pro(miner_hotkey):
-            raise SignalException(PRO_TRANSITION_REJECTION)
-
     def process_limit_order(self, miner_hotkey, order, is_edit=False):
         """
         RPC method to process a limit order or bracket order.
@@ -451,8 +421,6 @@ class LimitOrderManager(CacheController):
                     f"idempotent replay, not re-filling"
                 )
                 return {"status": "success", "order_uuid": order_uuid, "replayed": True}
-
-            self._reject_if_transitioning_to_pro(miner_hotkey, order, open_position)
 
             # Validate order using shared validation logic (business rules)
             if order.execution_type == ExecutionType.BRACKET:
@@ -1232,16 +1200,6 @@ class LimitOrderManager(CacheController):
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
         error_msg = None
-
-        # Re-check the pro transition here and not just at placement: a resting order that reduced
-        # a position when it was placed becomes an entry order once that position closes, and an
-        # order resting from before the transition was never checked at all. Without this the fill
-        # raises inside _apply_order and the generic handler below cancels it as a fill failure.
-        if self._blocked_by_pro_transition(miner_hotkey, order):
-            error_msg = f"Cancelling limit order [{order.order_uuid}] for [{miner_hotkey}]: {PRO_TRANSITION_REJECTION}"
-            logger.info(error_msg)
-            self._close_limit_order(miner_hotkey, order, OrderSource.PRO_TRANSITION_CANCELLED, fill_time)
-            return error_msg
 
         new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
         slippage = None if is_market_order else 0

@@ -96,6 +96,68 @@ class ChallengePeriodClient(RPCClientBase):
     def get_bucket_history(self, hotkey) -> list[dict] | None:
         return self._server.get_bucket_history_rpc(hotkey)
 
+    def get_bucket_statistics(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
+                              include: list[str] | None = None, limit: int | None = None) -> dict | None:
+        """A miner's bucket segments with the sections asked for (summary, positions, snapshots, stats)."""
+        return self._server.get_bucket_statistics_rpc(hotkey, bucket, start_ms, include, limit)
+
+    def get_bucket_history_checkpoint_dict(self) -> dict:
+        """Bucket segment summaries for the validator checkpoint."""
+        return self._server.get_bucket_history_checkpoint_dict_rpc()
+
+    def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
+        """Merge bucket segment summaries from a validator checkpoint."""
+        return self._server.sync_bucket_history_rpc(checkpoint_dict)
+
+    def get_bucket_segments(self, hotkey: str) -> list[dict]:
+        """A miner's bucket segment summaries, oldest first, without reverted ones."""
+        return self._server.get_bucket_segments_rpc(hotkey)
+
+    def migrate_weekly_seals(self, seals: dict) -> dict:
+        """Carry a checkpoint's weekly_seals (from a validator on the old release) into bucket history."""
+        return self._server.migrate_weekly_seals_rpc(seals)
+
+    def get_unmatched_settlements(self, hotkey: str) -> list[dict]:
+        """Settled segments of the migrated seal ledger that matched no bucket segment."""
+        return self._server.get_unmatched_settlements_rpc(hotkey)
+
+    def get_payout_records(self, hotkey: str) -> list[dict]:
+        """The payout records pinned on a miner's bucket segments."""
+        return self._server.get_payout_records_rpc(hotkey)
+
+    def admin_update_payout_record(self, hotkey: str, segment_start_ms: int, remove: bool = False,
+                                   recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        """Remove or recompute a segment's payout record. Returns (success, message, record)."""
+        return self._server.admin_update_payout_record_rpc(hotkey, segment_start_ms, remove, recompute)
+
+    def admin_drop_closed_weeks(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        """Unfreeze closed payout weeks (None: all of them). Returns (success, message, dropped week starts)."""
+        return self._server.admin_drop_closed_weeks_rpc(hotkey, week_starts_ms)
+
+    def admin_set_payout_override(self, hotkey: str, segment_start_ms: int, week_start_ms: int,
+                                  payout_usd: float | None = None, clear: bool = False,
+                                  note: str | None = None) -> Tuple[bool, str, dict | None]:
+        """Set or clear one segment-week's payout. Returns (success, message, the segment's overrides)."""
+        return self._server.admin_set_payout_override_rpc(hotkey, segment_start_ms, week_start_ms, payout_usd,
+                                                          clear, note)
+
+    def get_payout_overrides(self, hotkey: str) -> list[dict]:
+        """The payout overrides of a miner's segments."""
+        return self._server.get_payout_overrides_rpc(hotkey)
+
+    def get_soft_breach_weeks(self, hotkey: str) -> dict | None:
+        """Week start -> latched calmar breach days."""
+        return self._server.get_soft_breach_weeks_rpc(hotkey)
+
+    def admin_set_soft_breach_week(self, hotkey: str, week_start_ms: int,
+                                   days: list[int] | None) -> Tuple[bool, str]:
+        """Set one week's breached days (None drops the week). Returns (success, message)."""
+        return self._server.admin_set_soft_breach_week_rpc(hotkey, week_start_ms, days)
+
+    def get_drawdown_snapshot_fields(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
+        """Per-hotkey drawdown fields stamped onto account snapshots."""
+        return self._server.get_drawdown_snapshot_fields_rpc(hotkeys)
+
     def set_miner_bucket(
         self,
         hotkey: str,

@@ -105,7 +105,7 @@ def _validator_promote_client():
     }
     server._challenge_period_client = MagicMock()
     server._challenge_period_client.promote_subaccount.return_value = (True, "promoted")
-    server._challenge_period_client.get_miner_bucket.return_value = MinerBucket.PRO_CHALLENGE_TRANSITION
+    server._challenge_period_client.get_miner_bucket.return_value = MinerBucket.PRO_CHALLENGE_FROM_STANDARD
     server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
     server.nonce_manager = NonceManager()
     app = Flask(__name__)
@@ -155,7 +155,7 @@ class TestValidatorPromoteEndpoint(unittest.TestCase):
     def test_valid_request_forwards_the_requested_size(self):
         status, data = self._post(self._body(signed={"pro_account_size": GRANTED_SIZE}))
         self.assertEqual(status, 200, data)
-        self.assertEqual(data['bucket'], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(data['bucket'], MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value)
         self.assertEqual(data['pro_account_size'], GRANTED_SIZE)
         self._promote().assert_called_once()
         hotkey, timestamp, size = self._promote().call_args.args
@@ -789,8 +789,6 @@ class TestProLeverageCurveReporting(unittest.TestCase):
             (MinerBucket.PRO_CHALLENGE_DIRECT, 400_000, "pro", None),
             (MinerBucket.PRO_FUNDED, 400_000, "pro", None),
             (MinerBucket.PRO_FUNDED, 1_000_000, "pro", None),
-            # Transition still trades the standard account, so it keeps the standard curve.
-            (MinerBucket.PRO_CHALLENGE_TRANSITION, 100_000, "standard", 1),
             (MinerBucket.SUBACCOUNT_CHALLENGE, 100_000, "standard", 1),
         ]
         for bucket, account_size, curve, tier in cases:
@@ -1066,7 +1064,7 @@ class TestDashboardEndpointsAutoPromotion(unittest.TestCase):
         self.assertIsNone(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"])
         dashboard = self._dashboard(f"/v2/entity/subaccount/{self.candidate}")
         self.assertNotIn("auto_promotion", dashboard)
-        self.assertEqual(dashboard["challenge_period"]["bucket"], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(dashboard["challenge_period"]["bucket"], MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value)
 
     def test_a_candidate_without_stats_carries_its_target_with_null_stats(self):
         ledgers = {self.candidate: None}
