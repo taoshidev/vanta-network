@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import Mock, PropertyMock, call, patch
 import uuid
 
+from shared_objects.rpc.rpc_client_base import RPCCallTimeoutError
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_source_enum import OrderSource
@@ -404,7 +405,9 @@ class TestProcessFlatAll(OrderProcessorTestBase):
         self.limit_order_client.cancel_limit_order.assert_not_called()
 
     def test_all_with_no_open_positions_cancels_nothing(self):
-        self.flat_all("ALL", [])
+        # An empty list is an answer (nothing closed), not a missing one: nothing to warn about
+        with self.assertNoLogs("bittensor", level="WARNING"):
+            self.flat_all("ALL", [])
         self.limit_order_client.cancel_limit_order.assert_not_called()
 
     def test_case_insensitive_all(self):
@@ -432,19 +435,59 @@ class TestProcessFlatAll(OrderProcessorTestBase):
         self.assertTrue(result.should_track_uuid)
         self.assert_brackets_cancelled_on(self.BTC, self.ETH, self.SOL)
 
+    def test_cancel_timeout_stops_the_loop(self):
+        # The RPC client gave up waiting on the limit order server. Every further cancel would wait
+        # out the same timeout while the request holds its handler thread, so the rest is not tried
+        pairs = (self.BTC, self.ETH, self.SOL)
+        for i, timed_out in enumerate(pairs):
+            with self.subTest(timed_out=timed_out.trade_pair_id):
+                def cancel(hotkey, trade_pair_id, *args):
+                    if trade_pair_id == timed_out.trade_pair_id:
+                        raise RPCCallTimeoutError("LimitOrderServer", "cancel_limit_order", 60.0)
+                    return {"status": "cancelled"}
+                self.limit_order_client.cancel_limit_order.reset_mock()
+                self.limit_order_client.cancel_limit_order.side_effect = cancel
+
+                with self.assertLogs("bittensor", level="ERROR") as logs:
+                    result = self.flat_all("ALL", [tp.trade_pair_id for tp in pairs])
+
+                self.assertEqual(result.execution_type, ExecutionType.FLAT_ALL)
+                self.assertTrue(result.should_track_uuid)
+                self.assert_brackets_cancelled_on(*pairs[:i + 1])
+                self.assertEqual(len(logs.records), 1)
+                self.assertIn("timed out", logs.output[0])
+
+    def test_other_timeout_errors_keep_the_pairs_isolated(self):
+        # A TimeoutError raised by the limit order server's own code (a lock it could not take for
+        # that pair) is not the RPC client's call timeout: the other pairs are still cancelled
+        def cancel(hotkey, trade_pair_id, *args):
+            if trade_pair_id == self.BTC.trade_pair_id:
+                raise TimeoutError("could not take the limit order lock")
+            return {"status": "cancelled"}
+        self.limit_order_client.cancel_limit_order.side_effect = cancel
+
+        self.flat_all("ALL", [self.BTC.trade_pair_id, self.ETH.trade_pair_id, self.SOL.trade_pair_id])
+
+        self.assert_brackets_cancelled_on(self.BTC, self.ETH, self.SOL)
+
     def test_unknown_trade_pair_is_skipped_never_swept(self):
         # A pair id that resolves to no trade pair must not become a cancel with trade pair None
         self.flat_all("ALL", ["NOT_A_TRADE_PAIR", None, "", self.SOL.trade_pair_id])
         self.assert_brackets_cancelled_on(self.SOL)
 
     def test_no_closed_pairs_reported_cancels_nothing(self):
-        # A market order server that reports nothing (None, as before this change) closes no brackets
+        # A market order server that reports nothing (None, as before this change) closes no
+        # brackets, and the log says why none was cancelled
         for reported in (None, "SOLUSDC", {"SOLUSDC": True}, Mock()):
             with self.subTest(reported=reported):
                 self.limit_order_client.cancel_limit_order.reset_mock()
-                result = self.flat_all("ALL", reported)
+                with self.assertLogs("bittensor", level="WARNING") as logs:
+                    result = self.flat_all("ALL", reported)
                 self.assertEqual(result.execution_type, ExecutionType.FLAT_ALL)
                 self.limit_order_client.cancel_limit_order.assert_not_called()
+                self.assertEqual(len(logs.records), 1)
+                self.assertIn(f"close_positions returned {type(reported).__name__}", logs.output[0])
+                self.assertIn("No bracket order is cancelled", logs.output[0])
 
     def test_close_error_propagates_and_cancels_nothing(self):
         self.market_order_client.close_positions.side_effect = ConnectionRefusedError("market order server is down")
