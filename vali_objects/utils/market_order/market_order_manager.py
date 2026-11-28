@@ -369,14 +369,22 @@ class MarketOrderManager():
 
         return order, binding_cap
 
-    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
+    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False,
+                        now_ms: int | None = None) -> list[str]:
+        """Close every open position of the hotkey (close_all) or the ones named in position_uuids.
+
+        Returns the trade_pair_id of each position this call closed, as plain strings so the list
+        crosses RPC as it is. A position whose close raised, or that was no longer open when its
+        turn came, is left out: the caller cancels bracket orders on exactly these pairs, and a
+        pair listed by mistake would lose the stop loss of a position that is still open.
+        """
         logger.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")
 
         open_positions = self._position_client.get_positions_for_hotkeys([hotkey], only_open_positions=True).get(hotkey)
 
         if not open_positions:
             logger.warning(f"No open positions found for miner [{hotkey}]")
-            return
+            return []
 
         if close_all:
             positions_to_close = open_positions
@@ -385,17 +393,18 @@ class MarketOrderManager():
             positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
             if not positions_to_close:
                 logger.info(f"No matching positions found for UUIDs {position_uuids} for miner [{hotkey}]")
-                return
+                return []
 
         total_positions = len(positions_to_close)
-        cnt_closed = 0
+        closed_trade_pair_ids: list[str] = []
 
         logger.info(f"Found {total_positions} positions to close for miner [{hotkey}]")
 
         for i, position in enumerate(positions_to_close):
             position_close_uuid = f"{position.position_uuid}-flat-all"
+            trade_pair_id = position.trade_pair.trade_pair_id
             try:
-                self.execute_order(
+                result = self.execute_order(
                     hotkey=hotkey,
                     order_uuid=position_close_uuid,
                     trade_pair=position.trade_pair,
@@ -405,19 +414,30 @@ class MarketOrderManager():
                     now_ms=now_ms,
                     enforce_cooldown=False,
                 )
-                cnt_closed += 1
+                # None: the position was already gone (a stop or another order closed it since the
+                # listing above), and its brackets belong to whatever closed it. Otherwise the
+                # returned position says whether the pair is flat now.
+                _, closed_position = result if result is not None else (None, None)
+                if closed_position is None or not closed_position.is_closed_position:
+                    logger.warning(
+                        f"[FLAT_ALL] Position {i+1}/{total_positions} [{trade_pair_id}] for miner [{hotkey}] "
+                        f"was not closed by this request"
+                    )
+                elif trade_pair_id not in closed_trade_pair_ids:
+                    closed_trade_pair_ids.append(trade_pair_id)
 
             except Exception as e:
                 logger.error(
                     f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
-                    f"[{position.trade_pair.trade_pair_id}] for miner [{hotkey}]: {str(e)}"
+                    f"[{trade_pair_id}] for miner [{hotkey}]: {str(e)}"
                 )
                 continue
 
         logger.info(
             f"[FLAT_ALL] Completed for miner [{hotkey}]: "
-            f"{cnt_closed}/{total_positions} positions closed"
+            f"{len(closed_trade_pair_ids)}/{total_positions} positions closed"
         )
+        return closed_trade_pair_ids
 
     @staticmethod
     def _is_effective_close(position: Position, order_type: OrderType, order_quantity: float, order_value: float) -> bool:

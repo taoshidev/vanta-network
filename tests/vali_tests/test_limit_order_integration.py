@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -7,9 +8,12 @@ from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+from vali_objects.utils.market_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.price_source import PriceSource, NASDAQ_BASIC_TRADE_SOURCE
@@ -1007,6 +1011,149 @@ class TestLimitOrderIntegration(TestBase):
         self.inject_trade(47900.0)
         self.limit_order_client.check_and_fill_limit_orders()
         self.assertEqual(len(self.unfilled_orders()), 1)
+
+
+class TestFlatAllBracketScope(TestBase):
+    """
+    INTEGRATION TESTS for FLAT_ALL through OrderProcessor, against the market order and limit order
+    servers with nothing mocked: a FLAT_ALL cancels the bracket orders of the positions it closed
+    and leaves the stop loss of every other position resting.
+
+    Each test starts with a BTC, an ETH and a SOL position, each opened with a stop loss.
+    """
+
+    orchestrator = None
+    live_price_fetcher_client = None
+    metagraph_client = None
+    position_client = None
+    limit_order_client = None
+    market_order_client = None
+    miner_account_client = None
+    processor = None
+
+    MINER_HOTKEY = "flat_all_test_miner"
+    BTC = TradePair.BTCUSDC.trade_pair_id
+    ETH = TradePair.ETHUSDC.trade_pair_id
+    SOL = TradePair.SOLUSDC.trade_pair_id
+    TRADE_PAIRS = (TradePair.BTCUSDC, TradePair.ETHUSDC, TradePair.SOLUSDC)
+    # Every pair is priced at 50000 by the test price fallback, so this stop loss rests untriggered
+    STOP_LOSS = 40000.0
+
+    @classmethod
+    def setUpClass(cls):
+        cls.orchestrator = ServerOrchestrator.get_instance()
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=secrets)
+
+        cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+        cls.limit_order_client = cls.orchestrator.get_client('limit_order')
+        cls.market_order_client = cls.orchestrator.get_client('market_order')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
+        # The clients the validator hands its own OrderProcessor
+        cls.processor = OrderProcessor(
+            limit_order_client=cls.limit_order_client,
+            market_order_client=cls.market_order_client,
+            miner_account_client=cls.miner_account_client,
+        )
+
+    def setUp(self):
+        self.orchestrator.clear_all_test_data()
+        self.metagraph_client.set_hotkeys([self.MINER_HOTKEY])
+        self.now_ms = TimeUtil.now_in_millis()
+        self.position_uuids = {}
+        for trade_pair in self.TRADE_PAIRS:
+            result = self.processor.process_vanta_signal(
+                self.MINER_HOTKEY,
+                Signal(trade_pair=trade_pair, order_type=OrderType.LONG, value=500.0,
+                       bracket_orders=[{"stop_loss": self.STOP_LOSS}]),
+                f"open_{trade_pair.trade_pair_id}_{self.now_ms}",
+                self.now_ms,
+            )
+            self.position_uuids[trade_pair.trade_pair_id] = result.updated_position.position_uuid
+        self.assertEqual(self.open_pairs(), [self.BTC, self.ETH, self.SOL])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL])
+
+    def tearDown(self):
+        self.orchestrator.clear_all_test_data()
+
+    def open_pairs(self):
+        positions = self.position_client.get_positions_for_hotkeys(
+            [self.MINER_HOTKEY], only_open_positions=True
+        ).get(self.MINER_HOTKEY) or []
+        return sorted(p.trade_pair.trade_pair_id for p in positions)
+
+    def pairs_with_a_stop_loss(self):
+        """The trade pair of every bracket order still resting for the miner."""
+        orders = self.limit_order_client.to_dashboard_dict(self.MINER_HOTKEY) or []
+        for order in orders:
+            self.assertEqual(order['execution_type'], 'BRACKET')
+            self.assertEqual(order['stop_loss'], self.STOP_LOSS)
+        return sorted(order['trade_pair_id'] for order in orders)
+
+    def flat_all(self, order_uuid, processor=None):
+        result = (processor or self.processor).process_vanta_signal(
+            self.MINER_HOTKEY, Signal(execution_type=ExecutionType.FLAT_ALL), order_uuid, self.now_ms + 1000
+        )
+        self.assertEqual(result.execution_type, ExecutionType.FLAT_ALL)
+
+    def test_flat_all_of_one_position_keeps_the_stop_losses_of_the_others(self):
+        """Closing SOL by its position uuid used to cancel the stop losses on BTC and ETH as well."""
+        self.flat_all(self.position_uuids[self.SOL])
+
+        self.assertEqual(self.open_pairs(), [self.BTC, self.ETH])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH])
+
+    def test_flat_all_of_a_uuid_list_cancels_only_the_listed_positions_brackets(self):
+        self.flat_all(f"{self.position_uuids[self.BTC]}, {self.position_uuids[self.SOL]}")
+
+        self.assertEqual(self.open_pairs(), [self.ETH])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.ETH])
+
+    def test_flat_all_matching_no_position_cancels_no_bracket(self):
+        for order_uuid in ("not_a_position_uuid", ""):
+            with self.subTest(order_uuid=order_uuid):
+                self.flat_all(order_uuid)
+
+                self.assertEqual(self.open_pairs(), [self.BTC, self.ETH, self.SOL])
+                self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL])
+
+    def test_flat_all_all_cancels_the_brackets_of_every_position(self):
+        self.flat_all("ALL")
+
+        self.assertEqual(self.open_pairs(), [])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [])
+
+    def test_flat_all_in_a_closed_market_closes_nothing_and_keeps_every_stop_loss(self):
+        """FLAT_ALL skips positions whose market is closed; they stay open, so their brackets stay."""
+        self.live_price_fetcher_client.set_test_market_open(False)
+
+        self.flat_all("ALL")
+
+        self.assertEqual(self.open_pairs(), [self.BTC, self.ETH, self.SOL])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL])
+
+    def test_flat_all_keeps_the_stop_loss_of_a_position_it_failed_to_close(self):
+        """ETH's close fails inside the market order manager: ETH stays open, so its stop loss must stay too."""
+        manager = MarketOrderManager(False, running_unit_tests=True)
+        processor = OrderProcessor(
+            limit_order_client=self.limit_order_client,
+            market_order_client=manager,
+            miner_account_client=self.miner_account_client,
+        )
+        execute_order = manager.execute_order
+
+        def fail_eth(*args, **kwargs):
+            if kwargs["trade_pair"] == TradePair.ETHUSDC:
+                raise SignalException("Order Rejected: no live prices being found for ETHUSDC. Please try again.")
+            return execute_order(*args, **kwargs)
+
+        with patch.object(manager, "execute_order", side_effect=fail_eth):
+            self.flat_all("ALL", processor=processor)
+
+        self.assertEqual(self.open_pairs(), [self.ETH])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.ETH])
 
 
 if __name__ == '__main__':

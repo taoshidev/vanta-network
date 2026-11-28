@@ -268,21 +268,43 @@ class OrderProcessor:
     ) -> OrderProcessingResult:
         close_all = bool(order_uuid and order_uuid.strip().upper() == "ALL")
         position_uuids = None if close_all else [u.strip() for u in order_uuid.split(',')] if order_uuid else []
-        self.market_order_client.close_positions(
+        closed_trade_pair_ids = self.market_order_client.close_positions(
             hotkey=hotkey,
             position_uuids=position_uuids,
             close_all=close_all,
             now_ms=now_ms,
         )
-        # Post-commit: positions are closed above; a failed bracket sweep must not turn the
-        # committed close into an "apply failed" resend (see process_market_order).
-        try:
-            self.process_limit_cancel(hotkey, None, "ALL", now_ms, ExecutionType.BRACKET)
-        except Exception as e:
-            logger.error(
-                f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL COMMITTED but post-commit bracket cancel failed: {e}"
-            )
+        self._cancel_brackets_of_closed_pairs(hotkey, closed_trade_pair_ids, now_ms)
         return OrderProcessingResult(execution_type=ExecutionType.FLAT_ALL, should_track_uuid=True)
+
+    def _cancel_brackets_of_closed_pairs(self, hotkey: str, closed_trade_pair_ids: list[str] | None, now_ms: int) -> None:
+        """
+        Cancel the bracket orders of the trade pairs a FLAT_ALL closed, and of no other pair, the
+        rule a single FLAT follows for its own pair. A position this FLAT_ALL left open (not in the
+        uuid list, or its close failed) keeps its stop loss and take profit; closing nothing
+        cancels nothing.
+
+        Post-commit: the closes are durable, so nothing here may raise (see process_market_order).
+        Each pair is cancelled on its own, so one failure leaves the other pairs' cancels to run.
+        A bracket left behind on a closed pair is cancelled by the limit order daemon the next time
+        it checks that pair (LimitOrderManager.check_and_fill_limit_orders).
+        """
+        if not isinstance(closed_trade_pair_ids, (list, tuple)):
+            # Nothing reported (a MarketOrderServer still on the code that returned None, mid-deploy):
+            # cancel nothing rather than guess which pairs closed
+            return
+        for trade_pair_id in closed_trade_pair_ids:
+            try:
+                trade_pair = TradePair.from_trade_pair_id(trade_pair_id)
+                if trade_pair is None:
+                    # Never fall through: process_limit_cancel reads no trade pair as every trade pair
+                    raise ValueError("unknown trade pair")
+                self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
+            except Exception as e:
+                logger.error(
+                    f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL COMMITTED but post-commit bracket cancel "
+                    f"failed for [{trade_pair_id}]: {e}"
+                )
 
 
     def process_hyperliquid_order(

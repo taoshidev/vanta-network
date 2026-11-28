@@ -433,6 +433,8 @@ Modifies an existing pending limit or bracket order. The `order_uuid` must match
 
 Closes open positions across all trade pairs.
 
+Bracket orders (stop loss / take profit) are cancelled only on the trade pairs of the positions it closes. A position it leaves open, because it is not listed or because its close did not go through (its market is closed, for example), keeps its bracket orders.
+
 #### Close all open positions
 
 ```json
