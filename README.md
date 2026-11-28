@@ -148,7 +148,7 @@ If you attempt to re-register a previously used hotkey after elimination or dere
 Take a look at the top traders on Vanta <a href="https://www.vantanetwork.io/dashboard">Dashboard</a>
 
 ### Auto Trade with Vanta data 
-https://x.com/glitchfinancial
+https://x.com/TradeWithGlitch
 
 ### Theta Token
 https://www.taoshi.io/theta
