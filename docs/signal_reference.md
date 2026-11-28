@@ -435,6 +435,8 @@ Closes open positions across all trade pairs.
 
 Bracket orders (stop loss / take profit) are cancelled only on the trade pairs of the positions it closes. A position it leaves open, because it is not listed or because its close did not go through (its market is closed, for example), keeps its bracket orders.
 
+A FLAT_ALL by position UUID can be resent with the same UUIDs: for a listed position that is already closed, the bracket orders still resting on its trade pair are cancelled, unless a position is open on that trade pair. Resending `ALL` only acts on the positions that are open at that moment.
+
 #### Close all open positions
 
 ```json

@@ -1062,21 +1062,32 @@ class TestFlatAllBracketScope(TestBase):
         self.orchestrator.clear_all_test_data()
         self.metagraph_client.set_hotkeys([self.MINER_HOTKEY])
         self.now_ms = TimeUtil.now_in_millis()
-        self.position_uuids = {}
-        for trade_pair in self.TRADE_PAIRS:
-            result = self.processor.process_vanta_signal(
-                self.MINER_HOTKEY,
-                Signal(trade_pair=trade_pair, order_type=OrderType.LONG, value=500.0,
-                       bracket_orders=[{"stop_loss": self.STOP_LOSS}]),
-                f"open_{trade_pair.trade_pair_id}_{self.now_ms}",
-                self.now_ms,
-            )
-            self.position_uuids[trade_pair.trade_pair_id] = result.updated_position.position_uuid
+        self.position_uuids = {
+            trade_pair.trade_pair_id: self.open_with_a_stop_loss(trade_pair, self.now_ms) for trade_pair in self.TRADE_PAIRS
+        }
         self.assertEqual(self.open_pairs(), [self.BTC, self.ETH, self.SOL])
         self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL])
 
     def tearDown(self):
         self.orchestrator.clear_all_test_data()
+
+    def open_with_a_stop_loss(self, trade_pair, now_ms):
+        """Open a LONG position with a stop loss attached, the way a trader does. Returns its position uuid."""
+        result = self.processor.process_vanta_signal(
+            self.MINER_HOTKEY,
+            Signal(trade_pair=trade_pair, order_type=OrderType.LONG, value=500.0,
+                   bracket_orders=[{"stop_loss": self.STOP_LOSS}]),
+            f"open_{trade_pair.trade_pair_id}_{now_ms}",
+            now_ms,
+        )
+        return result.updated_position.position_uuid
+
+    def close_without_the_bracket_cancel(self, position_uuids=None, close_all=False):
+        """A FLAT_ALL whose closes are committed and whose caller never reaches the bracket cancel:
+        the processor timed out waiting for close_positions, or died right after it."""
+        return self.market_order_client.close_positions(
+            hotkey=self.MINER_HOTKEY, position_uuids=position_uuids, close_all=close_all, now_ms=self.now_ms + 1000
+        )
 
     def open_pairs(self):
         positions = self.position_client.get_positions_for_hotkeys(
@@ -1092,9 +1103,9 @@ class TestFlatAllBracketScope(TestBase):
             self.assertEqual(order['stop_loss'], self.STOP_LOSS)
         return sorted(order['trade_pair_id'] for order in orders)
 
-    def flat_all(self, order_uuid, processor=None):
+    def flat_all(self, order_uuid, processor=None, now_ms=None):
         result = (processor or self.processor).process_vanta_signal(
-            self.MINER_HOTKEY, Signal(execution_type=ExecutionType.FLAT_ALL), order_uuid, self.now_ms + 1000
+            self.MINER_HOTKEY, Signal(execution_type=ExecutionType.FLAT_ALL), order_uuid, now_ms or self.now_ms + 1000
         )
         self.assertEqual(result.execution_type, ExecutionType.FLAT_ALL)
 
@@ -1132,6 +1143,46 @@ class TestFlatAllBracketScope(TestBase):
         self.flat_all("ALL")
 
         self.assertEqual(self.open_pairs(), [self.BTC, self.ETH, self.SOL])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL])
+
+    def test_resent_flat_all_cancels_the_brackets_its_first_attempt_left_behind(self):
+        sol_uuid = self.position_uuids[self.SOL]
+        self.assertEqual(self.close_without_the_bracket_cancel([sol_uuid]), [self.SOL])
+        self.assertEqual(self.open_pairs(), [self.BTC, self.ETH])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL])
+
+        # The trader gets no answer and sends the same FLAT_ALL again. Nothing is open under that
+        # uuid any more, and the stop loss its position left behind is cancelled all the same
+        self.flat_all(sol_uuid, now_ms=self.now_ms + 2000)
+
+        self.assertEqual(self.open_pairs(), [self.BTC, self.ETH])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH])
+
+    def test_resent_flat_all_keeps_the_brackets_of_a_pair_reopened_since(self):
+        sol_uuid = self.position_uuids[self.SOL]
+        self.close_without_the_bracket_cancel([sol_uuid])
+        # Before the resend arrives, a new SOL position is opened with a stop loss of its own
+        reopened_ms = self.now_ms + 1000 + ValiConfig.ORDER_COOLDOWN_MS + 1
+        new_sol_uuid = self.open_with_a_stop_loss(TradePair.SOLUSDC, reopened_ms)
+        self.assertNotEqual(new_sol_uuid, sol_uuid)
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL, self.SOL])
+
+        self.flat_all(sol_uuid, now_ms=reopened_ms + 1000)
+
+        # SOL has an open position: none of the brackets on the pair is touched, and it stays open
+        self.assertEqual(self.open_pairs(), [self.BTC, self.ETH, self.SOL])
+        self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL, self.SOL])
+        open_sol = self.position_client.get_open_position_for_trade_pair(self.MINER_HOTKEY, self.SOL)
+        self.assertEqual(open_sol.position_uuid, new_sol_uuid)
+
+    def test_resent_flat_all_all_leaves_the_brackets_to_the_limit_order_daemon(self):
+        """The limit of the resend: "ALL" names no position, so with nothing open it reports nothing
+        to cancel. The limit order daemon cancels brackets whose pair has no open position."""
+        self.assertEqual(sorted(self.close_without_the_bracket_cancel(close_all=True)), [self.BTC, self.ETH, self.SOL])
+        self.assertEqual(self.open_pairs(), [])
+
+        self.flat_all("ALL", now_ms=self.now_ms + 2000)
+
         self.assertEqual(self.pairs_with_a_stop_loss(), [self.BTC, self.ETH, self.SOL])
 
     def test_flat_all_keeps_the_stop_loss_of_a_position_it_failed_to_close(self):

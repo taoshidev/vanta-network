@@ -65,8 +65,10 @@ class MarketOrderClient(RPCClientBase):
         Close every open position of the hotkey (close_all) or the ones named in position_uuids.
 
         Returns:
-            The trade_pair_id of each position this call closed. A position whose close failed, or
-            that was no longer open, is not listed.
+            The trade_pair_ids whose bracket orders the caller should cancel: the pair of each
+            position this call closed and, when position_uuids are given, of each named position
+            that was already closed and whose pair has no open position (a resent request). A
+            position whose close failed, or any pair with an open position, is not listed.
         """
         return self._server.close_positions_rpc(
             hotkey=hotkey,
